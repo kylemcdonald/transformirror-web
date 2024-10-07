@@ -30,10 +30,8 @@ class Settings:
     osc_port: int = 8888
     running: bool = True
 
-# Modify the global variable
 settings = Settings()
 
-# Add this function to handle OSC messages
 def osc_worker(settings):
     osc = OscSocket(settings.osc_host, settings.osc_port)
     while settings.running:
@@ -44,17 +42,18 @@ def osc_worker(settings):
             prompt = ' '.join(msg.params)
             settings.prompt = prompt
             print(f"OSC: Updated prompt to '{prompt}'")
-    osc.close()  # Close the OSC socket when exiting
+    osc.close()
 
-# Modify the filter_worker function to use settings
 def filter_worker(input_queue, output_queue, settings):
-    processor = DiffusionProcessor(local_files_only=False)
+    processor = DiffusionProcessor(local_files_only=False, warmup="1x1024x1024x3")
+    inference_frame_count = 0
     while True:
+        start_time = time.time()
         img = input_queue.get()
         if img is None:
             break
         
-        img = np.float32(img) / 255
+        img = np.float32(np.fliplr(img)) / 255
         filtered_img = processor.run(
             images=[img],
             prompt=settings.prompt,
@@ -68,6 +67,11 @@ def filter_worker(input_queue, output_queue, settings):
         except queue.Full:
             output_queue.get()
             output_queue.put(filtered_img, block=False)
+            
+        if inference_frame_count % 30 == 0:
+            inference_time_ms = (time.time() - start_time) * 1000
+            print(f"Inference time: {inference_time_ms:.2f} ms")
+        inference_frame_count += 1
 
 class VideoTransformTrack(VideoStreamTrack):
     """
@@ -83,43 +87,52 @@ class VideoTransformTrack(VideoStreamTrack):
         self.filter_thread.start()
         self.latest_frame = None
         self.settings = settings
+        self.new_frame_available = asyncio.Event()  # Add this line
 
     async def recv(self):
-        frame = await self.track.recv()
+        while True:
+            frame = await self.track.recv()
 
-        # Convert frame to numpy array
-        img = frame.to_ndarray(format="rgb24")
-        
-        # Measure the time taken for resizing
-        start_time = time.time()
-        img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LANCZOS4)
-        resize_time_ms = (time.time() - start_time) * 1000  # Convert to milliseconds
+            # Convert frame to numpy array
+            img = frame.to_ndarray(format="rgb24")
+            
+            # Measure the time taken for resizing
+            start_time = time.time()
+            img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+            resize_time_ms = (time.time() - start_time) * 1000  # Convert to milliseconds
 
-        try:
-            self.input_queue.put(img, block=False)
-        except queue.Full:
-            pass  # Skip this frame if the queue is full
-
-        try:
-            filtered_img = self.output_queue.get(block=False)
-            new_frame = frame.from_ndarray(filtered_img, format="rgb24")
-            new_frame.pts = frame.pts
-            new_frame.time_base = frame.time_base
-            self.latest_frame = new_frame
-        except queue.Empty:
-            pass
-        
-        if self.frame_num % 120 == 0:
-            print(f"Resize time: {resize_time_ms:.2f} ms")
-            print(f"Frame {self.frame_num} input resolution: {frame.width}x{frame.height}")
-            print(f"Frame {self.frame_num} resized resolution: {img.shape[1]}x{img.shape[0]}")
             try:
-                print(f"Frame {self.frame_num} output resolution: {self.latest_frame.width}x{self.latest_frame.height}")
-            except AttributeError:
-                print(f"Frame {self.frame_num} output resolution: None")
+                self.input_queue.put(img, block=False)
+            except queue.Full:
+                pass  # Skip this frame if the queue is full
 
-        self.frame_num += 1
-        return self.latest_frame or frame
+            try:
+                filtered_img = self.output_queue.get(block=False)
+                new_frame = frame.from_ndarray(filtered_img, format="rgb24")
+                new_frame.pts = frame.pts
+                new_frame.time_base = frame.time_base
+                self.latest_frame = new_frame
+                self.new_frame_available.set()  # Signal that a new frame is available
+            except queue.Empty:
+                pass
+        
+            if self.frame_num % 120 == 0:
+                print(f"Resize time: {resize_time_ms:.2f} ms")
+                print(f"Frame {self.frame_num} input resolution: {frame.width}x{frame.height}")
+                print(f"Frame {self.frame_num} resized resolution: {img.shape[1]}x{img.shape[0]}")
+                try:
+                    print(f"Frame {self.frame_num} output resolution: {self.latest_frame.width}x{self.latest_frame.height}")
+                except AttributeError:
+                    print(f"Frame {self.frame_num} output resolution: None")
+
+            self.frame_num += 1
+
+            if self.new_frame_available.is_set():
+                self.new_frame_available.clear()
+                return self.latest_frame
+
+            # If no new frame is available, yield control to allow other tasks to run
+            await asyncio.sleep(0)
 
     def stop(self):
         self.input_queue.put(None)  # Signal the worker to stop
@@ -133,7 +146,6 @@ async def offer(request):
     params = await request.json()
     offer = RTCSessionDescription(sdp=params['sdp'], type=params['type'])
 
-    # Create RTCConfiguration with the same STUN server as the frontend
     ice_servers = [
         RTCIceServer(urls="stun:stun.l.google.com:19302"),
     ]
@@ -144,25 +156,12 @@ async def offer(request):
 
     @pc.on('iceconnectionstatechange')
     async def on_iceconnectionstatechange():
-        logger.info('ICE connection state is %s', pc.iceConnectionState)
-        logger.info('Local candidates: %s', pc.localDescription.sdp)
-        logger.info('Remote candidates: %s', pc.remoteDescription.sdp)
         if pc.iceConnectionState == 'failed':
             await pc.close()
             pcs.discard(pc)
 
-    @pc.on('icegatheringstatechange')
-    def on_icegatheringstatechange():
-        logger.info('ICE gathering state is %s', pc.iceGatheringState)
-
-    @pc.on('signalingstatechange')
-    def on_signalingstatechange():
-        logger.info('Signaling state is %s', pc.signalingState)
-
     @pc.on('track')
     def on_track(track):
-        logger.info('Track %s received', track.kind)
-
         if track.kind == 'video':
             local_video = VideoTransformTrack(relay.subscribe(track), settings)
             pc.addTrack(local_video)
@@ -177,6 +176,13 @@ async def offer(request):
 async def on_shutdown(app):
     print("Shutting down...")
     
+    # Stop the OSC worker thread first
+    print("Stopping OSC worker thread...")
+    settings.running = False
+    app['osc_thread'].join(timeout=5)  # Add a timeout
+    if app['osc_thread'].is_alive():
+        print("OSC thread did not stop in time")
+
     # Close peer connections and stop video transform tracks
     coros = []
     for pc in pcs:
@@ -184,13 +190,9 @@ async def on_shutdown(app):
         for sender in pc.getSenders():
             if isinstance(sender.track, VideoTransformTrack):
                 sender.track.stop()
-    await asyncio.gather(*coros)
+    await asyncio.gather(*coros, return_exceptions=True)
     pcs.clear()
 
-    # Stop the OSC worker thread
-    print("Stopping OSC worker thread...")
-    settings.running = False
-    app['osc_thread'].join()
     print("Application shut down successfully.")
 
 async def set_prompt(request):
@@ -212,7 +214,7 @@ if __name__ == '__main__':
     ssl_context.load_cert_chain('cert.pem', 'key.pem')
     
     # Start the OSC worker thread
-    osc_thread = threading.Thread(target=osc_worker, args=(settings,))
+    osc_thread = threading.Thread(target=osc_worker, args=(settings,), daemon=True)
     osc_thread.start()
     app['osc_thread'] = osc_thread  # Store the thread in the app for later access
     
