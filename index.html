@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Transformirror</title>
+  <link rel="icon" href="data:,">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: black;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+      font-family: Arial, sans-serif;
+    }
+    #remoteVideo, #localVideo {
+      height: 100%;
+      width: auto;
+      max-width: 100%;
+      object-fit: contain;
+    }
+    #streamInfo {
+      display: none;
+    }
+    #controls {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    #videoDevices {
+      margin-bottom: 20px;
+      padding: 10px;
+      font-size: 18px;
+      background-color: #333;
+      color: white;
+      border: 2px solid white;
+      border-radius: 5px;
+    }
+    #startButton {
+      padding: 15px 30px;
+      font-size: 24px;
+      background-color: black;
+      color: white;
+      border: 2px solid white;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      touch-action: manipulation;
+    }
+    #startButton:hover {
+      background-color: #333;
+    }
+    #startButton:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #debugInfo {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      background-color: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      font-size: 12px;
+      z-index: 1000;
+      display: none; /* Hide debug info by default */
+    }
+    #keyBindings {
+      margin-top: 20px;
+      color: white;
+      text-align: center;
+    }
+    #keyBindings ul {
+      list-style-type: none;
+      padding: 0;
+    }
+    #keyBindings li {
+      margin: 5px 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <select id="videoDevices"></select>
+    <button id="startButton" onclick="start()">Start</button>
+    <div id="keyBindings">
+      <ul>
+        <li>Press 'D' to toggle debug information</li>
+        <li>Press 'C' to switch between local and remote video</li>
+      </ul>
+    </div>
+  </div>
+  <video id="localVideo" autoplay muted></video>
+  <video id="remoteVideo" autoplay></video>
+  <div id="streamInfo"></div>
+  <div id="debugInfo"></div>
+  <script>
+    var pc = null;
+    var localStream = null;
+    var servers = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" } // can help with NAT traversal
+      ]
+    };
+
+    var statsInterval;
+
+    var lastBytesSent = 0;
+    var lastBytesReceived = 0;
+    var lastTimestamp = 0;
+
+    async function enumerateDevices() {
+      const deviceSelect = document.getElementById('videoDevices');
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+      
+      videoDevices.forEach(device => {
+        const option = document.createElement('option');
+        option.value = device.deviceId;
+        option.text = device.label || `Camera ${deviceSelect.length + 1}`;
+        deviceSelect.appendChild(option);
+      });
+    }
+
+    async function start() {
+      const startButton = document.getElementById('startButton');
+      const videoDevices = document.getElementById('videoDevices');
+      
+      startButton.textContent = 'Connecting...';
+      startButton.disabled = true;
+      
+      pc = new RTCPeerConnection(servers);
+
+      pc.ontrack = function(event) {
+        var remoteVideo = document.getElementById('remoteVideo');
+        if (remoteVideo.srcObject !== event.streams[0]) {
+          remoteVideo.srcObject = event.streams[0];
+          // Hide controls when remote video starts
+          document.getElementById('controls').style.display = 'none';
+        }
+      };
+
+      const deviceSelect = document.getElementById('videoDevices');
+      const selectedDeviceId = deviceSelect.value;
+
+      localStream = await navigator.mediaDevices.getUserMedia({
+        video: { 
+          deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
+          width: 1080, 
+          height: 1080, 
+          frameRate: 30 
+        },
+        audio: false
+      });
+
+      var localVideo = document.getElementById('localVideo');
+      localVideo.srcObject = localStream;
+      localVideo.style.display = 'none'; // Hide local video initially
+
+      // Print out actual stream properties
+      const videoTrack = localStream.getVideoTracks()[0];
+      const settings = videoTrack.getSettings();
+      document.getElementById('streamInfo').innerHTML = `
+        Actual stream properties:
+        Width: ${settings.width}px,
+        Height: ${settings.height}px,
+        Frame Rate: ${settings.frameRate}fps
+      `;
+
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      var offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      var response = await fetch('/offer', {
+        method: 'POST',
+        body: JSON.stringify(pc.localDescription),
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      var answer = await response.json();
+      await pc.setRemoteDescription(answer);
+
+      // Start collecting stats after connection is established
+      statsInterval = setInterval(getStats, 1000);
+    }
+
+    async function getStats() {
+      if (!pc || !debugInfoVisible) return;
+
+      const stats = await pc.getStats();
+      let debugInfo = '';
+      const currentTimestamp = Date.now();
+
+      stats.forEach(report => {
+        if (report.type === 'outbound-rtp' && report.kind === 'video') {
+          const bytesSentMB = (report.bytesSent / (1024 * 1024)).toFixed(2);
+          const sendBandwidth = calculateBandwidth(report.bytesSent, currentTimestamp, lastBytesSent, lastTimestamp);
+          debugInfo += `Tx ${report.frameWidth}x${report.frameHeight} @ ${report.framesPerSecond} fps ${sendBandwidth} (${bytesSentMB} MB)\n`;
+          lastBytesSent = report.bytesSent;
+        }
+        if (report.type === 'inbound-rtp' && report.kind === 'video') {
+          const bytesReceivedMB = (report.bytesReceived / (1024 * 1024)).toFixed(2);
+          const receiveBandwidth = calculateBandwidth(report.bytesReceived, currentTimestamp, lastBytesReceived, lastTimestamp);
+          debugInfo += `Rx ${report.frameWidth}x${report.frameHeight} @ ${report.framesPerSecond} fps ${receiveBandwidth} (${bytesReceivedMB} MB)\n`;
+          lastBytesReceived = report.bytesReceived;
+        }
+        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+          const timestamp = new Date(report.timestamp).toISOString();
+          debugInfo += `Round Trip: ${report.currentRoundTripTime * 1000}ms\n`;
+          debugInfo += `Available Outgoing Bitrate: ${Math.round(report.availableOutgoingBitrate / 1000)} kbps\n`;
+        }
+      });
+
+      lastTimestamp = currentTimestamp;
+      document.getElementById('debugInfo').innerText = debugInfo;
+    }
+
+    function calculateBandwidth(currentBytes, currentTimestamp, lastBytes, lastTimestamp) {
+      if (lastBytes === 0 || lastTimestamp === 0) {
+        return 'N/A';
+      }
+      
+      const bytesTransferred = currentBytes - lastBytes;
+      const timeElapsed = (currentTimestamp - lastTimestamp) / 1000; // Convert to seconds
+      
+      if (timeElapsed <= 0 || bytesTransferred < 0) {
+        return 'N/A';
+      }
+      
+      const bandwidthKbps = (bytesTransferred * 8) / (timeElapsed * 1000);
+      return Math.round(bandwidthKbps) + ' kbps';
+    }
+
+    // Add this new function
+    function toggleDebugInfo(event) {
+      if (event.key === 'd' || event.key === 'D') {
+        debugInfoVisible = !debugInfoVisible;
+        document.getElementById('debugInfo').style.display = debugInfoVisible ? 'block' : 'none';
+      }
+    }
+
+    var debugInfoVisible = false; // Add this line to track debug info visibility
+
+    var showingLocalVideo = false; // Add this line to track which video is currently shown
+
+    // Add this new function
+    function toggleVideoView(event) {
+      if (event.key === 'c' || event.key === 'C') {
+        showingLocalVideo = !showingLocalVideo;
+        document.getElementById('localVideo').style.display = showingLocalVideo ? 'block' : 'none';
+        document.getElementById('remoteVideo').style.display = showingLocalVideo ? 'none' : 'block';
+      }
+    }
+
+    enumerateDevices();
+
+    document.addEventListener('keydown', toggleDebugInfo);
+    document.addEventListener('keydown', toggleVideoView); // Add this line
+  </script>
+</body>
+</html>
