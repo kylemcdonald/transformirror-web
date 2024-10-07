@@ -14,6 +14,6 @@ conda activate transformirror-web
 git clone https://github.com/kylemcdonald/transformirror-web.git
 cd transformirror-web
 pip install -r requirements.txt
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=webrtc-bot"
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=transformirror-web"
 python server.py
 ```
