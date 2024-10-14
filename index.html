@@ -87,6 +87,12 @@
     #keyBindings li {
       margin: 5px 0;
     }
+    #localVideo {
+      display: none;
+      width: 1px;
+      height: 1px;
+      position: absolute;
+    }
   </style>
 </head>
 <body>
@@ -123,6 +129,12 @@
     let debugInfoVisible = false;
     let showingLocalVideo = false;
 
+    // Add these new variables
+    let lastThirtySendFrames = [];
+    let lastThirtyReceiveFrames = [];
+    let lastThirtySendBytes = [];
+    let lastThirtyReceiveBytes = [];
+
     async function enumerateDevices() {
       const deviceSelect = document.getElementById('videoDevices');
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -150,14 +162,15 @@
           deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
           width: 1080, 
           height: 1080, 
-          frameRate: 30 
+          frameRate: 10
         },
         audio: false
       });
 
       const localVideo = document.getElementById('localVideo');
       localVideo.srcObject = localStream;
-      localVideo.style.display = 'none'; // Hide local video initially
+      // Remove this line as we're handling display in CSS
+      // localVideo.style.display = 'none';
 
       // Wait for the video to be ready
       await new Promise((resolve) => {
@@ -170,7 +183,6 @@
       // Check if we're getting video data
       const track = localStream.getVideoTracks()[0];
       const settings = track.getSettings();
-      console.log('Video track settings:', settings);
 
       document.getElementById('streamInfo').innerHTML = `
         Actual stream properties:
@@ -204,6 +216,18 @@
           bytesReceived += event.data.size;
           lastBytesReceived = event.data.size;
           receiveFrameCount++;
+
+          // Add frame info to the arrays
+          const frameInfo = { timestamp: Date.now(), bytes: event.data.size };
+          lastThirtyReceiveFrames.push(frameInfo);
+          lastThirtyReceiveBytes.push(event.data.size);
+
+          // Keep only the last 30 frames
+          if (lastThirtyReceiveFrames.length > 30) {
+            lastThirtyReceiveFrames.shift();
+            lastThirtyReceiveBytes.shift();
+          }
+
           URL.revokeObjectURL(img.src);
         };
         img.src = URL.createObjectURL(new Blob([event.data], { type: 'image/jpeg' }));
@@ -232,6 +256,18 @@
         bytesSent += blob.size;
         lastBytesSent = blob.size;
         sendFrameCount++;
+
+        // Add frame info to the arrays
+        const frameInfo = { timestamp: Date.now(), bytes: blob.size };
+        lastThirtySendFrames.push(frameInfo);
+        lastThirtySendBytes.push(blob.size);
+
+        // Keep only the last 30 frames
+        if (lastThirtySendFrames.length > 30) {
+          lastThirtySendFrames.shift();
+          lastThirtySendBytes.shift();
+        }
+
         updateDebugInfo();
 
         requestVideoFrame(); // Request the next frame
@@ -244,11 +280,18 @@
       const now = Date.now();
       if (now - lastUpdateTime < 1000) return;
 
-      const elapsedTime = (now - startTime) / 1000;
-      const sendFps = (sendFrameCount / elapsedTime).toFixed(2);
-      const receiveFps = (receiveFrameCount / elapsedTime).toFixed(2);
-      const sendBandwidthKbps = ((bytesSent / 1024) / elapsedTime).toFixed();
-      const receiveBandwidthKbps = ((bytesReceived / 1024) / elapsedTime).toFixed();
+      // Calculate send FPS and bandwidth based on the last 30 frames
+      const sendTimeRange = lastThirtySendFrames.length > 1 ? 
+        lastThirtySendFrames[lastThirtySendFrames.length - 1].timestamp - lastThirtySendFrames[0].timestamp : 1000;
+      const sendFps = (lastThirtySendFrames.length / (sendTimeRange / 1000)).toFixed(2);
+      const sendBandwidthKbps = ((lastThirtySendBytes.reduce((a, b) => a + b, 0) / 1024) / (sendTimeRange / 1000)).toFixed();
+
+      // Calculate receive FPS and bandwidth based on the last 30 frames
+      const receiveTimeRange = lastThirtyReceiveFrames.length > 1 ? 
+        lastThirtyReceiveFrames[lastThirtyReceiveFrames.length - 1].timestamp - lastThirtyReceiveFrames[0].timestamp : 1000;
+      const receiveFps = (lastThirtyReceiveFrames.length / (receiveTimeRange / 1000)).toFixed(2);
+      const receiveBandwidthKbps = ((lastThirtyReceiveBytes.reduce((a, b) => a + b, 0) / 1024) / (receiveTimeRange / 1000)).toFixed();
+
       const lastBytesSentKb = (lastBytesSent / 1024).toFixed();
       const lastBytesReceivedKb = (lastBytesReceived / 1024).toFixed();
 
@@ -277,8 +320,25 @@
     function toggleVideoView(event) {
       if (event.key === 'c' || event.key === 'C') {
         showingLocalVideo = !showingLocalVideo;
-        document.getElementById('localVideo').style.display = showingLocalVideo ? 'block' : 'none';
-        document.getElementById('remoteVideo').style.display = showingLocalVideo ? 'none' : 'block';
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        
+        if (showingLocalVideo) {
+          localVideo.style.display = 'block';
+          localVideo.style.width = '100%';
+          localVideo.style.height = '100%';
+          localVideo.style.position = 'fixed';
+          localVideo.style.top = '0';
+          localVideo.style.left = '0';
+          localVideo.style.objectFit = 'contain';
+          remoteVideo.style.display = 'none';
+        } else {
+          localVideo.style.display = 'none';
+          localVideo.style.width = '1px';
+          localVideo.style.height = '1px';
+          localVideo.style.position = 'absolute';
+          remoteVideo.style.display = 'block';
+        }
       }
     }
 

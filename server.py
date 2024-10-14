@@ -8,6 +8,7 @@ import queue
 from diffusion_processor import DiffusionProcessor
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
@@ -15,6 +16,7 @@ logger = logging.getLogger("server")
 @dataclass
 class Settings:
     prompt: str = "a psychedelic landscape"
+    jpeg_quality: int = 50
 
 settings = Settings()
 
@@ -25,6 +27,7 @@ class ImageProcessor:
         self.thread = threading.Thread(target=self.process_images)
         self.thread.start()
         self.processor = DiffusionProcessor(local_files_only=False, warmup="1x1024x1024x3")
+        logger.info("ImageProcessor initialized and warmed up")
 
     def process_images(self):
         inference_frame_count = 0
@@ -36,7 +39,6 @@ class ImageProcessor:
 
                 start_time = time.time()
 
-                # Decode the image
                 nparr = np.frombuffer(data, np.uint8)
                 img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -51,8 +53,8 @@ class ImageProcessor:
                 )[0]
                 filtered_img = np.uint8(filtered_img * 255)
 
-                # Encode the processed image
-                _, buffer = cv2.imencode(".jpg", cv2.cvtColor(filtered_img, cv2.COLOR_RGB2BGR))
+                encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), settings.jpeg_quality]
+                _, buffer = cv2.imencode(".jpg", cv2.cvtColor(filtered_img, cv2.COLOR_RGB2BGR), encode_params)
                 buffer = buffer.tobytes()
 
                 try:
@@ -81,15 +83,18 @@ async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    processor = ImageProcessor()
+    processor = request.app['image_processor']
 
     try:
         async for msg in ws:
             if msg.type == WSMsgType.BINARY:
-                try:
-                    processor.input_queue.put(msg.data, block=False)
-                except queue.Full:
-                    pass
+                if processor.input_queue.full():
+                    try:
+                        processor.input_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                
+                processor.input_queue.put_nowait(msg.data)
 
                 try:
                     buffer = processor.output_queue.get(block=False)
@@ -101,29 +106,50 @@ async def websocket_handler(request):
                     "WebSocket connection closed with exception %s", ws.exception()
                 )
     finally:
-        processor.stop()
+        pass
 
     return ws
 
-async def set_prompt(request):
-    try:
+async def set_parameters(request):
+    response = []
+    
+    if 'prompt' in request.query:
         new_prompt = request.query['prompt']
         settings.prompt = new_prompt
-        return web.Response(text=f"Prompt updated to: {settings.prompt}")
-    except KeyError:
-        return web.Response(status=400, text="Invalid request: 'prompt' parameter is required")
+        response.append(f"Prompt updated to: {settings.prompt}")
+    
+    if 'quality' in request.query:
+        try:
+            new_quality = int(request.query['quality'])
+            if 1 <= new_quality <= 100:
+                settings.jpeg_quality = new_quality
+                response.append(f"JPEG quality updated to: {settings.jpeg_quality}")
+            else:
+                response.append("Invalid quality value. Please use a number between 1 and 100.")
+        except ValueError:
+            response.append("Invalid quality value. Please provide an integer.")
+    
+    if not response:
+        return web.Response(status=400, text="No valid parameters provided.")
+    
+    return web.Response(text="\n".join(response))
 
 async def on_shutdown(app):
     for ws in set(app['websockets']):
         await ws.close(code=WSMsgType.CLOSE, message="Server shutdown")
     app['websockets'].clear()
+    
+    app['image_processor'].stop()
 
 if __name__ == '__main__':
     app = web.Application()
     app['websockets'] = set()
+    
+    app['image_processor'] = ImageProcessor()
+    
     app.router.add_get('/', index)
     app.router.add_get('/ws', websocket_handler)
-    app.router.add_get('/prompt', set_prompt)
+    app.router.add_get('/set', set_parameters)
     app.on_shutdown.append(on_shutdown)
 
     web.run_app(app, access_log=None, port=8080)
