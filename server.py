@@ -11,9 +11,6 @@ import numpy as np
 from diffusion_processor import DiffusionProcessor
 import time
 import ssl
-
-# Add these imports
-from osc_socket import OscSocket
 from dataclasses import dataclass
 
 logging.basicConfig(level=logging.INFO)
@@ -22,27 +19,11 @@ logger = logging.getLogger("pc")
 pcs = set()
 relay = MediaRelay()
 
-# Modify the Settings dataclass to include a running flag
 @dataclass
 class Settings:
     prompt: str = "a psychedelic landscape"
-    osc_host: str = "0.0.0.0"
-    osc_port: int = 8888
-    running: bool = True
 
 settings = Settings()
-
-def osc_worker(settings):
-    osc = OscSocket(settings.osc_host, settings.osc_port)
-    while settings.running:
-        msg = osc.recv()
-        if msg is None:
-            continue
-        if msg.address == "/prompt":
-            prompt = ' '.join(msg.params)
-            settings.prompt = prompt
-            print(f"OSC: Updated prompt to '{prompt}'")
-    osc.close()
 
 def filter_worker(input_queue, output_queue, settings):
     processor = DiffusionProcessor(local_files_only=False, warmup="1x1024x1024x3")
@@ -176,13 +157,6 @@ async def offer(request):
 async def on_shutdown(app):
     print("Shutting down...")
     
-    # Stop the OSC worker thread first
-    print("Stopping OSC worker thread...")
-    settings.running = False
-    app['osc_thread'].join(timeout=5)  # Add a timeout
-    if app['osc_thread'].is_alive():
-        print("OSC thread did not stop in time")
-
     # Close peer connections and stop video transform tracks
     coros = []
     for pc in pcs:
@@ -212,10 +186,5 @@ if __name__ == '__main__':
     
     ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     ssl_context.load_cert_chain('cert.pem', 'key.pem')
-    
-    # Start the OSC worker thread
-    osc_thread = threading.Thread(target=osc_worker, args=(settings,), daemon=True)
-    osc_thread.start()
-    app['osc_thread'] = osc_thread  # Store the thread in the app for later access
     
     web.run_app(app, access_log=None, port=8443, ssl_context=ssl_context)
