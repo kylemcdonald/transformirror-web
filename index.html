@@ -159,8 +159,18 @@
       localVideo.srcObject = localStream;
       localVideo.style.display = 'none'; // Hide local video initially
 
-      videoTrack = localStream.getVideoTracks()[0];
-      const settings = videoTrack.getSettings();
+      // Wait for the video to be ready
+      await new Promise((resolve) => {
+        localVideo.onloadedmetadata = () => {
+          localVideo.play();
+          resolve();
+        };
+      });
+
+      // Check if we're getting video data
+      const track = localStream.getVideoTracks()[0];
+      const settings = track.getSettings();
+      console.log('Video track settings:', settings);
 
       document.getElementById('streamInfo').innerHTML = `
         Actual stream properties:
@@ -172,7 +182,7 @@
       canvas = document.createElement('canvas');
       canvas.width = settings.width;
       canvas.height = settings.height;
-      ctx = canvas.getContext('2d');
+      ctx = canvas.getContext('2d', { willReadFrequently: true });
 
       const remoteCanvas = document.getElementById('remoteVideo');
       remoteCanvas.width = settings.width;
@@ -206,6 +216,17 @@
 
     function processVideoFrame(now, metadata) {
       ctx.drawImage(localVideo, 0, 0, canvas.width, canvas.height);
+      
+      // Add debugging to check if the canvas contains non-black pixels
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      let isAllBlack = true;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] !== 0 || data[i+1] !== 0 || data[i+2] !== 0) {
+          isAllBlack = false;
+          break;
+        }
+      }
       canvas.toBlob((blob) => {
         ws.send(blob);
         bytesSent += blob.size;

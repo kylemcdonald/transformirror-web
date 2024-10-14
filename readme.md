@@ -61,3 +61,16 @@ http://localhost:8080/prompt?prompt=your new prompt here
 ```
 
 Replace "your new prompt here" with the desired prompt text.
+
+## RunPod
+
+```
+mkdir /workspace/.cache
+export HF_HOME=/workspace/.cache
+pip3 install -r requirements.txt
+apt update
+apt install libturbojpeg
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
