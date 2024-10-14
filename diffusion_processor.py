@@ -17,11 +17,13 @@ from compel import Compel, ReturnedEmbeddingsType
 from fixed_size_dict import FixedSizeDict
 
 class DiffusionProcessor:
-    def __init__(self, warmup=None, local_files_only=True):
+    def __init__(self, warmup=None, local_files_only=True, gpu_id=0):
         base_model = "stabilityai/sdxl-turbo"
         vae_model = "madebyollin/taesdxl"
 
         warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
+
+        self.device = torch.device(f"cuda:{gpu_id}")
 
         disable_progress_bar()
         self.pipe = AutoPipelineForImage2Image.from_pretrained(
@@ -36,7 +38,7 @@ class DiffusionProcessor:
         )
         fix_seed(self.pipe)
 
-        print("Model loaded")
+        print(f"Model loaded on {self.device}")
 
         config = CompilationConfig.Default()
         config.enable_xformers = True
@@ -46,10 +48,10 @@ class DiffusionProcessor:
 
         print("Model compiled")
 
-        self.pipe.to(device="cuda", dtype=torch.float16)
+        self.pipe.to(device=self.device, dtype=torch.float16)
         self.pipe.set_progress_bar_config(disable=True)
 
-        print("Model moved to GPU", flush=True)
+        print(f"Model moved to {self.device}", flush=True)
         
         self.compel = Compel(
             tokenizer=[self.pipe.tokenizer, self.pipe.tokenizer_2],
@@ -60,7 +62,7 @@ class DiffusionProcessor:
         self.prompt_cache = FixedSizeDict(32)
         print("Prepared compel")
 
-        self.generator = torch.manual_seed(0)
+        self.generator = torch.Generator(device=self.device).manual_seed(0)
         
         if warmup:
             warmup_shape = [int(e) for e in warmup.split("x")]
@@ -100,15 +102,15 @@ class DiffusionProcessor:
     def run(self, images, prompt, num_inference_steps, strength, use_compel=False, seed=None):
         strength = min(max(1 / num_inference_steps, strength), 1)
         if seed is not None:
-            self.generator = torch.manual_seed(seed)
+            self.generator = torch.Generator(device=self.device).manual_seed(seed)
         kwargs = {}
         if use_compel:
             conditioning, pooled = self.meta_embed_prompt(prompt)
             batch_size = len(images)
             conditioning_batch = conditioning.expand(batch_size, -1, -1)
             pooled_batch = pooled.expand(batch_size, -1)
-            kwargs["prompt_embeds"] = conditioning_batch
-            kwargs["pooled_prompt_embeds"] = pooled_batch
+            kwargs["prompt_embeds"] = conditioning_batch.to(self.device)
+            kwargs["pooled_prompt_embeds"] = pooled_batch.to(self.device)
         else:
             kwargs["prompt"] = [prompt] * len(images)
         return self.pipe(
