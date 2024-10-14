@@ -1,23 +1,16 @@
 import asyncio
-import json
 import logging
+from aiohttp import web, WSMsgType
 import cv2
-from aiohttp import web
-from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack, RTCConfiguration, RTCIceServer
-from aiortc.contrib.media import MediaRelay
+import numpy as np
 import threading
 import queue
-import numpy as np
 from diffusion_processor import DiffusionProcessor
 import time
-import ssl
 from dataclasses import dataclass
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("pc")
-
-pcs = set()
-relay = MediaRelay()
+logger = logging.getLogger("server")
 
 @dataclass
 class Settings:
@@ -25,149 +18,92 @@ class Settings:
 
 settings = Settings()
 
-def filter_worker(input_queue, output_queue, settings):
-    processor = DiffusionProcessor(local_files_only=False, warmup="1x1024x1024x3")
-    inference_frame_count = 0
-    while True:
-        start_time = time.time()
-        img = input_queue.get()
-        if img is None:
-            break
-        
-        img = np.float32(np.fliplr(img)) / 255
-        filtered_img = processor.run(
-            images=[img],
-            prompt=settings.prompt,
-            num_inference_steps=2,
-            strength=0.7
-        )[0]
-        filtered_img = np.uint8(filtered_img * 255)
-        
-        try:
-            output_queue.put(filtered_img, block=False)
-        except queue.Full:
-            output_queue.get()
-            output_queue.put(filtered_img, block=False)
-            
-        if inference_frame_count % 30 == 0:
-            inference_time_ms = (time.time() - start_time) * 1000
-            print(f"Inference time: {inference_time_ms:.2f} ms")
-        inference_frame_count += 1
-
-class VideoTransformTrack(VideoStreamTrack):
-    """
-    A video stream track that transforms frames using a diffusion model.
-    """
-    def __init__(self, track, settings):
-        super().__init__()  # Don't forget this!
-        self.track = track
-        self.frame_num = 0
+class ImageProcessor:
+    def __init__(self):
         self.input_queue = queue.Queue(maxsize=1)
         self.output_queue = queue.Queue(maxsize=1)
-        self.filter_thread = threading.Thread(target=filter_worker, args=(self.input_queue, self.output_queue, settings))
-        self.filter_thread.start()
-        self.latest_frame = None
-        self.settings = settings
-        self.new_frame_available = asyncio.Event()  # Add this line
+        self.thread = threading.Thread(target=self.process_images)
+        self.thread.start()
+        self.processor = DiffusionProcessor(local_files_only=False, warmup="1x1024x1024x3")
 
-    async def recv(self):
+    def process_images(self):
+        inference_frame_count = 0
         while True:
-            frame = await self.track.recv()
-
-            # Convert frame to numpy array
-            img = frame.to_ndarray(format="rgb24")
-            
-            # Measure the time taken for resizing
-            start_time = time.time()
-            img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
-            resize_time_ms = (time.time() - start_time) * 1000  # Convert to milliseconds
-
             try:
-                self.input_queue.put(img, block=False)
-            except queue.Full:
-                pass  # Skip this frame if the queue is full
+                data = self.input_queue.get(timeout=1)
+                if data is None:
+                    break
 
-            try:
-                filtered_img = self.output_queue.get(block=False)
-                new_frame = frame.from_ndarray(filtered_img, format="rgb24")
-                new_frame.pts = frame.pts
-                new_frame.time_base = frame.time_base
-                self.latest_frame = new_frame
-                self.new_frame_available.set()  # Signal that a new frame is available
+                start_time = time.time()
+
+                # Decode the image
+                nparr = np.frombuffer(data, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+
+                img = np.float32(np.fliplr(img)) / 255
+                filtered_img = self.processor.run(
+                    images=[img],
+                    prompt=settings.prompt,
+                    num_inference_steps=2,
+                    strength=0.7
+                )[0]
+                filtered_img = np.uint8(filtered_img * 255)
+
+                # Encode the processed image
+                _, buffer = cv2.imencode(".jpg", cv2.cvtColor(filtered_img, cv2.COLOR_RGB2BGR))
+                buffer = buffer.tobytes()
+
+                try:
+                    self.output_queue.put(buffer, block=False)
+                except queue.Full:
+                    pass
+
+                if inference_frame_count % 30 == 0:
+                    inference_time_ms = (time.time() - start_time) * 1000
+                    print(f"Inference time: {inference_time_ms:.2f} ms")
+                inference_frame_count += 1
+
             except queue.Empty:
                 pass
-        
-            if self.frame_num % 120 == 0:
-                print(f"Resize time: {resize_time_ms:.2f} ms")
-                print(f"Frame {self.frame_num} input resolution: {frame.width}x{frame.height}")
-                print(f"Frame {self.frame_num} resized resolution: {img.shape[1]}x{img.shape[0]}")
-                try:
-                    print(f"Frame {self.frame_num} output resolution: {self.latest_frame.width}x{self.latest_frame.height}")
-                except AttributeError:
-                    print(f"Frame {self.frame_num} output resolution: None")
-
-            self.frame_num += 1
-
-            if self.new_frame_available.is_set():
-                self.new_frame_available.clear()
-                return self.latest_frame
-
-            # If no new frame is available, yield control to allow other tasks to run
-            await asyncio.sleep(0)
 
     def stop(self):
-        self.input_queue.put(None)  # Signal the worker to stop
-        self.filter_thread.join()
+        self.input_queue.put(None)
+        self.thread.join()
 
 async def index(request):
-    content = open('index.html', 'r').read()
-    return web.Response(content_type='text/html', text=content)
+    with open("index.html", "r") as f:
+        content = f.read()
+    return web.Response(content_type="text/html", text=content)
 
-async def offer(request):
-    params = await request.json()
-    offer = RTCSessionDescription(sdp=params['sdp'], type=params['type'])
+async def websocket_handler(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
 
-    ice_servers = [
-        RTCIceServer(urls="stun:stun.l.google.com:19302"),
-    ]
-    config = RTCConfiguration(iceServers=ice_servers)
+    processor = ImageProcessor()
 
-    pc = RTCPeerConnection(configuration=config)
-    pcs.add(pc)
+    try:
+        async for msg in ws:
+            if msg.type == WSMsgType.BINARY:
+                try:
+                    processor.input_queue.put(msg.data, block=False)
+                except queue.Full:
+                    pass
 
-    @pc.on('iceconnectionstatechange')
-    async def on_iceconnectionstatechange():
-        if pc.iceConnectionState == 'failed':
-            await pc.close()
-            pcs.discard(pc)
+                try:
+                    buffer = processor.output_queue.get(block=False)
+                    await ws.send_bytes(buffer)
+                except queue.Empty:
+                    pass
+            elif msg.type == WSMsgType.ERROR:
+                logger.error(
+                    "WebSocket connection closed with exception %s", ws.exception()
+                )
+    finally:
+        processor.stop()
 
-    @pc.on('track')
-    def on_track(track):
-        if track.kind == 'video':
-            local_video = VideoTransformTrack(relay.subscribe(track), settings)
-            pc.addTrack(local_video)
-
-    await pc.setRemoteDescription(offer)
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-
-    response = {'sdp': pc.localDescription.sdp, 'type': pc.localDescription.type}
-    return web.Response(content_type='application/json', text=json.dumps(response))
-
-async def on_shutdown(app):
-    print("Shutting down...")
-    
-    # Close peer connections and stop video transform tracks
-    coros = []
-    for pc in pcs:
-        coros.append(pc.close())
-        for sender in pc.getSenders():
-            if isinstance(sender.track, VideoTransformTrack):
-                sender.track.stop()
-    await asyncio.gather(*coros, return_exceptions=True)
-    pcs.clear()
-
-    print("Application shut down successfully.")
+    return ws
 
 async def set_prompt(request):
     try:
@@ -177,14 +113,17 @@ async def set_prompt(request):
     except KeyError:
         return web.Response(status=400, text="Invalid request: 'prompt' parameter is required")
 
+async def on_shutdown(app):
+    for ws in set(app['websockets']):
+        await ws.close(code=WSMsgType.CLOSE, message="Server shutdown")
+    app['websockets'].clear()
+
 if __name__ == '__main__':
     app = web.Application()
+    app['websockets'] = set()
     app.router.add_get('/', index)
-    app.router.add_post('/offer', offer)
+    app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/prompt', set_prompt)
     app.on_shutdown.append(on_shutdown)
-    
-    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    ssl_context.load_cert_chain('cert.pem', 'key.pem')
-    
-    web.run_app(app, access_log=None, port=8443, ssl_context=ssl_context)
+
+    web.run_app(app, access_log=None, port=8080)

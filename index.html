@@ -64,7 +64,7 @@
     }
     #debugInfo {
       position: fixed;
-      top: 10px;
+      bottom: 10px;
       left: 10px;
       background-color: rgba(0, 0, 0, 0.7);
       color: white;
@@ -101,23 +101,27 @@
     </div>
   </div>
   <video id="localVideo" autoplay muted></video>
-  <video id="remoteVideo" autoplay></video>
+  <canvas id="remoteVideo"></canvas>
   <div id="streamInfo"></div>
   <div id="debugInfo"></div>
   <script>
-    var pc = null;
-    var localStream = null;
-    var servers = {
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" } // can help with NAT traversal
-      ]
-    };
-
-    var statsInterval;
-
-    var lastBytesSent = 0;
-    var lastBytesReceived = 0;
-    var lastTimestamp = 0;
+    const quality = 0.5;
+    let ws;
+    let localStream;
+    let videoTrack;
+    let canvas;
+    let ctx;
+    let startTime;
+    let sendFrameCount = 0;
+    let receiveFrameCount = 0;
+    let bytesSent = 0;
+    let bytesReceived = 0;
+    let lastUpdateTime;
+    let lastBytesSent = 0;
+    let lastBytesReceived = 0;
+    let videoFrameCallbackId;
+    let debugInfoVisible = false;
+    let showingLocalVideo = false;
 
     async function enumerateDevices() {
       const deviceSelect = document.getElementById('videoDevices');
@@ -134,23 +138,11 @@
 
     async function start() {
       const startButton = document.getElementById('startButton');
-      const videoDevices = document.getElementById('videoDevices');
+      const deviceSelect = document.getElementById('videoDevices');
       
       startButton.textContent = 'Connecting...';
       startButton.disabled = true;
       
-      pc = new RTCPeerConnection(servers);
-
-      pc.ontrack = function(event) {
-        var remoteVideo = document.getElementById('remoteVideo');
-        if (remoteVideo.srcObject !== event.streams[0]) {
-          remoteVideo.srcObject = event.streams[0];
-          // Hide controls when remote video starts
-          document.getElementById('controls').style.display = 'none';
-        }
-      };
-
-      const deviceSelect = document.getElementById('videoDevices');
       const selectedDeviceId = deviceSelect.value;
 
       localStream = await navigator.mediaDevices.getUserMedia({
@@ -163,13 +155,13 @@
         audio: false
       });
 
-      var localVideo = document.getElementById('localVideo');
+      const localVideo = document.getElementById('localVideo');
       localVideo.srcObject = localStream;
       localVideo.style.display = 'none'; // Hide local video initially
 
-      // Print out actual stream properties
-      const videoTrack = localStream.getVideoTracks()[0];
+      videoTrack = localStream.getVideoTracks()[0];
       const settings = videoTrack.getSettings();
+
       document.getElementById('streamInfo').innerHTML = `
         Actual stream properties:
         Width: ${settings.width}px,
@@ -177,73 +169,83 @@
         Frame Rate: ${settings.frameRate}fps
       `;
 
-      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      canvas = document.createElement('canvas');
+      canvas.width = settings.width;
+      canvas.height = settings.height;
+      ctx = canvas.getContext('2d');
 
-      var offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      const remoteCanvas = document.getElementById('remoteVideo');
+      remoteCanvas.width = settings.width;
+      remoteCanvas.height = settings.height;
+      const remoteCtx = remoteCanvas.getContext('2d');
 
-      var response = await fetch('/offer', {
-        method: 'POST',
-        body: JSON.stringify(pc.localDescription),
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-      var answer = await response.json();
-      await pc.setRemoteDescription(answer);
+      ws = new WebSocket(`wss://${window.location.host}/ws`);
 
-      // Start collecting stats after connection is established
-      statsInterval = setInterval(getStats, 1000);
+      ws.onopen = () => {
+        document.getElementById('controls').style.display = 'none';
+        startTime = Date.now();
+        requestVideoFrame();
+      };
+
+      ws.onmessage = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          remoteCtx.drawImage(img, 0, 0);
+          bytesReceived += event.data.size;
+          lastBytesReceived = event.data.size;
+          receiveFrameCount++;
+          URL.revokeObjectURL(img.src);
+        };
+        img.src = URL.createObjectURL(new Blob([event.data], { type: 'image/jpeg' }));
+      };
     }
 
-    async function getStats() {
-      if (!pc || !debugInfoVisible) return;
+    function requestVideoFrame() {
+      videoFrameCallbackId = localVideo.requestVideoFrameCallback(processVideoFrame);
+    }
 
-      const stats = await pc.getStats();
-      let debugInfo = '';
-      const currentTimestamp = Date.now();
+    function processVideoFrame(now, metadata) {
+      ctx.drawImage(localVideo, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        ws.send(blob);
+        bytesSent += blob.size;
+        lastBytesSent = blob.size;
+        sendFrameCount++;
+        updateDebugInfo();
 
-      stats.forEach(report => {
-        if (report.type === 'outbound-rtp' && report.kind === 'video') {
-          const bytesSentMB = (report.bytesSent / (1024 * 1024)).toFixed(2);
-          const sendBandwidth = calculateBandwidth(report.bytesSent, currentTimestamp, lastBytesSent, lastTimestamp);
-          debugInfo += `Tx ${report.frameWidth}x${report.frameHeight} @ ${report.framesPerSecond} fps ${sendBandwidth} (${bytesSentMB} MB)\n`;
-          lastBytesSent = report.bytesSent;
-        }
-        if (report.type === 'inbound-rtp' && report.kind === 'video') {
-          const bytesReceivedMB = (report.bytesReceived / (1024 * 1024)).toFixed(2);
-          const receiveBandwidth = calculateBandwidth(report.bytesReceived, currentTimestamp, lastBytesReceived, lastTimestamp);
-          debugInfo += `Rx ${report.frameWidth}x${report.frameHeight} @ ${report.framesPerSecond} fps ${receiveBandwidth} (${bytesReceivedMB} MB)\n`;
-          lastBytesReceived = report.bytesReceived;
-        }
-        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-          const timestamp = new Date(report.timestamp).toISOString();
-          debugInfo += `Round Trip: ${report.currentRoundTripTime * 1000}ms\n`;
-          debugInfo += `Available Outgoing Bitrate: ${Math.round(report.availableOutgoingBitrate / 1000)} kbps\n`;
-        }
-      });
+        requestVideoFrame(); // Request the next frame
+      }, 'image/jpeg', quality);
+    }
 
-      lastTimestamp = currentTimestamp;
+    function updateDebugInfo() {
+      if (!debugInfoVisible) return;
+
+      const now = Date.now();
+      if (now - lastUpdateTime < 1000) return;
+
+      const elapsedTime = (now - startTime) / 1000;
+      const sendFps = (sendFrameCount / elapsedTime).toFixed(2);
+      const receiveFps = (receiveFrameCount / elapsedTime).toFixed(2);
+      const sendBandwidthKbps = ((bytesSent / 1024) / elapsedTime).toFixed();
+      const receiveBandwidthKbps = ((bytesReceived / 1024) / elapsedTime).toFixed();
+      const lastBytesSentKb = (lastBytesSent / 1024).toFixed();
+      const lastBytesReceivedKb = (lastBytesReceived / 1024).toFixed();
+
+      const debugInfo = `
+        Send FPS: ${sendFps}
+        Receive FPS: ${receiveFps}
+        Send Bandwidth: ${sendBandwidthKbps} Kbps
+        Receive Bandwidth: ${receiveBandwidthKbps} Kbps
+        Last Sent: ${lastBytesSentKb} Kb
+        Last Received: ${lastBytesReceivedKb} Kb
+        Total Sent: ${(bytesSent / (1024 * 1024)).toFixed(2)} MB
+        Total Received: ${(bytesReceived / (1024 * 1024)).toFixed(2)} MB
+      `;
+
       document.getElementById('debugInfo').innerText = debugInfo;
+      lastUpdateTime = now;
     }
 
-    function calculateBandwidth(currentBytes, currentTimestamp, lastBytes, lastTimestamp) {
-      if (lastBytes === 0 || lastTimestamp === 0) {
-        return 'N/A';
-      }
-      
-      const bytesTransferred = currentBytes - lastBytes;
-      const timeElapsed = (currentTimestamp - lastTimestamp) / 1000; // Convert to seconds
-      
-      if (timeElapsed <= 0 || bytesTransferred < 0) {
-        return 'N/A';
-      }
-      
-      const bandwidthKbps = (bytesTransferred * 8) / (timeElapsed * 1000);
-      return Math.round(bandwidthKbps) + ' kbps';
-    }
-
-    // Add this new function
     function toggleDebugInfo(event) {
       if (event.key === 'd' || event.key === 'D') {
         debugInfoVisible = !debugInfoVisible;
@@ -251,11 +253,6 @@
       }
     }
 
-    var debugInfoVisible = false; // Add this line to track debug info visibility
-
-    var showingLocalVideo = false; // Add this line to track which video is currently shown
-
-    // Add this new function
     function toggleVideoView(event) {
       if (event.key === 'c' || event.key === 'C') {
         showingLocalVideo = !showingLocalVideo;
@@ -264,10 +261,23 @@
       }
     }
 
-    enumerateDevices();
+    function cleanup() {
+      if (ws) {
+        ws.close();
+      }
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+      }
+      if (videoFrameCallbackId) {
+        localVideo.cancelVideoFrameCallback(videoFrameCallbackId);
+      }
+    }
 
+    window.addEventListener('beforeunload', cleanup);
     document.addEventListener('keydown', toggleDebugInfo);
-    document.addEventListener('keydown', toggleVideoView); // Add this line
+    document.addEventListener('keydown', toggleVideoView);
+
+    enumerateDevices();
   </script>
 </body>
 </html>
