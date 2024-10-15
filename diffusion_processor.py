@@ -17,24 +17,27 @@ from compel import Compel, ReturnedEmbeddingsType
 from fixed_size_dict import FixedSizeDict
 
 class DiffusionProcessor:
-    def __init__(self, warmup=None, local_files_only=True, gpu_id=0):
+    def __init__(self, warmup=None, local_files_only=True, gpu_id=0, use_compel=True):
         base_model = "stabilityai/sdxl-turbo"
         vae_model = "madebyollin/taesdxl"
 
         warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
 
         self.device = torch.device(f"cuda:{gpu_id}")
-
+        
         disable_progress_bar()
         self.pipe = AutoPipelineForImage2Image.from_pretrained(
             base_model,
             torch_dtype=torch.float16,
             variant="fp16",
-            local_files_only=local_files_only,
+            local_files_only=local_files_only
         )
 
         self.pipe.vae = AutoencoderTiny.from_pretrained(
-            vae_model, torch_dtype=torch.float16, local_files_only=local_files_only
+            vae_model,
+            torch_dtype=torch.float16,
+            local_files_only=local_files_only,
+            device=self.device
         )
         fix_seed(self.pipe)
 
@@ -53,14 +56,18 @@ class DiffusionProcessor:
 
         print(f"Model moved to {self.device}", flush=True)
         
-        self.compel = Compel(
-            tokenizer=[self.pipe.tokenizer, self.pipe.tokenizer_2],
-            text_encoder=[self.pipe.text_encoder, self.pipe.text_encoder_2],
-            returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
-            requires_pooled=[False, True],
-        )
-        self.prompt_cache = FixedSizeDict(32)
-        print("Prepared compel")
+        if use_compel:
+            self.compel = Compel(
+                tokenizer=[self.pipe.tokenizer, self.pipe.tokenizer_2],
+                text_encoder=[self.pipe.text_encoder, self.pipe.text_encoder_2],
+                returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
+                requires_pooled=[False, True],
+                device=self.device
+            )
+            self.prompt_cache = FixedSizeDict(32)
+            print("Prepared compel")
+        else:
+            self.compel = None
 
         self.generator = torch.Generator(device=self.device).manual_seed(0)
         
@@ -99,26 +106,27 @@ class DiffusionProcessor:
         pool = pool1 * t1 + pool2 * t2
         return cond, pool
     
-    def run(self, images, prompt, num_inference_steps, strength, use_compel=False, seed=None):
-        strength = min(max(1 / num_inference_steps, strength), 1)
-        if seed is not None:
-            self.generator = torch.Generator(device=self.device).manual_seed(seed)
-        kwargs = {}
-        if use_compel:
-            conditioning, pooled = self.meta_embed_prompt(prompt)
-            batch_size = len(images)
-            conditioning_batch = conditioning.expand(batch_size, -1, -1)
-            pooled_batch = pooled.expand(batch_size, -1)
-            kwargs["prompt_embeds"] = conditioning_batch.to(self.device)
-            kwargs["pooled_prompt_embeds"] = pooled_batch.to(self.device)
-        else:
-            kwargs["prompt"] = [prompt] * len(images)
-        return self.pipe(
-            image=images,
-            generator=self.generator,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=0,
-            strength=strength,
-            output_type="np",
-            **kwargs
-        ).images
+    def run(self, images, prompt, num_inference_steps, strength, seed=None):
+        with torch.cuda.device(self.device):
+            strength = min(max(1 / num_inference_steps, strength), 1)
+            if seed is not None:
+                self.generator = torch.Generator().manual_seed(seed)
+            kwargs = {}
+            if self.compel is not None:
+                conditioning, pooled = self.meta_embed_prompt(prompt)
+                batch_size = len(images)
+                conditioning_batch = conditioning.expand(batch_size, -1, -1)
+                pooled_batch = pooled.expand(batch_size, -1)
+                kwargs["prompt_embeds"] = conditioning_batch
+                kwargs["pooled_prompt_embeds"] = pooled_batch
+            else:
+                kwargs["prompt"] = [prompt] * len(images)
+            return self.pipe(
+                image=images,
+                generator=self.generator,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=0,
+                strength=strength,
+                output_type="np",
+                **kwargs
+            ).images

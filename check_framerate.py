@@ -3,7 +3,7 @@ import time
 from diffusion_processor import DiffusionProcessor
 
 # Initialize the DiffusionProcessor
-processor = DiffusionProcessor(local_files_only=False)
+processor = DiffusionProcessor(local_files_only=False, gpu_id=0)
 
 # Create a random 1024x1024x3 image
 input_image = np.random.rand(1024, 1024, 3).astype(np.float32)
