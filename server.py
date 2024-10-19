@@ -9,6 +9,7 @@ from diffusion_processor import DiffusionProcessor
 import time
 from dataclasses import dataclass
 from typing import Optional
+import torch
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
@@ -24,17 +25,27 @@ class ImageProcessor:
     def __init__(self):
         self.input_queue = queue.Queue(maxsize=1)
         self.output_queue = queue.Queue(maxsize=1)
-        self.thread = threading.Thread(target=self.process_images)
-        self.thread.start()
-        self.processor = DiffusionProcessor(local_files_only=False, warmup="1x1024x1024x3")
-        logger.info("ImageProcessor initialized and warmed up")
+        self.threads = []
+        
+        gpu_count = torch.cuda.device_count()
+        logger.info(f"Total number of available GPUs: {gpu_count}")
+        
+        for i in range(gpu_count):
+            thread = threading.Thread(target=self.process_images, args=(i,))
+            logger.info(f"ImageProcessor initialized with GPU ID: {i}")
+            thread.start()
+            self.threads.append(thread)
 
-    def process_images(self):
+    def process_images(self, gpu_id):
+        processor = DiffusionProcessor(local_files_only=False, warmup="1x1024x1024x3", gpu_id=gpu_id)
+        logger.info(f"DiffusionProcessor warmed up on GPU ID: {gpu_id}")
+        
         inference_frame_count = 0
         while True:
             try:
                 data = self.input_queue.get(timeout=1)
                 if data is None:
+                    self.input_queue.put(None)
                     break
 
                 start_time = time.time()
@@ -45,7 +56,7 @@ class ImageProcessor:
                 img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
 
                 img = np.float32(np.fliplr(img)) / 255
-                filtered_img = self.processor.run(
+                filtered_img = processor.run(
                     images=[img],
                     prompt=settings.prompt,
                     num_inference_steps=2,
@@ -72,7 +83,8 @@ class ImageProcessor:
 
     def stop(self):
         self.input_queue.put(None)
-        self.thread.join()
+        for thread in self.threads:
+            self.thread.join()
 
 async def index(request):
     with open("index.html", "r") as f:
@@ -145,7 +157,8 @@ if __name__ == '__main__':
     app = web.Application()
     app['websockets'] = set()
     
-    app['image_processor'] = ImageProcessor()
+    # You can specify the GPU ID here, or leave it as None to use the default
+    app['image_processor'] = ImageProcessor(gpu_id=0)  # Use GPU 0, for example
     
     app.router.add_get('/', index)
     app.router.add_get('/ws', websocket_handler)
