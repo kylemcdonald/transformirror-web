@@ -2,3 +2,4 @@ __pycache__
 *.jpg
 *.pem
 venv
+config.sh

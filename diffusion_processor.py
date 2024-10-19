@@ -24,66 +24,67 @@ class DiffusionProcessor:
         warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
 
         self.device = torch.device(f"cuda:{gpu_id}")
-        
-        disable_progress_bar()
-        self.pipe = AutoPipelineForImage2Image.from_pretrained(
-            base_model,
-            torch_dtype=torch.float16,
-            variant="fp16",
-            local_files_only=local_files_only
-        )
+        with torch.cuda.device(self.device):
+            
+            disable_progress_bar()
+            self.pipe = AutoPipelineForImage2Image.from_pretrained(
+                base_model,
+                torch_dtype=torch.float16,
+                variant="fp16",
+                local_files_only=local_files_only
+            )
 
-        self.pipe.vae = AutoencoderTiny.from_pretrained(
-            vae_model,
-            torch_dtype=torch.float16,
-            local_files_only=local_files_only,
-            device=self.device
-        )
-        fix_seed(self.pipe)
-
-        print(f"Model loaded on {self.device}")
-
-        config = CompilationConfig.Default()
-        config.enable_xformers = True
-        config.enable_triton = True
-        config.enable_cuda_graph = True
-        self.pipe = compile(self.pipe, config=config)
-
-        print("Model compiled")
-
-        self.pipe.to(device=self.device, dtype=torch.float16)
-        self.pipe.set_progress_bar_config(disable=True)
-
-        print(f"Model moved to {self.device}", flush=True)
-        
-        if use_compel:
-            self.compel = Compel(
-                tokenizer=[self.pipe.tokenizer, self.pipe.tokenizer_2],
-                text_encoder=[self.pipe.text_encoder, self.pipe.text_encoder_2],
-                returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
-                requires_pooled=[False, True],
+            self.pipe.vae = AutoencoderTiny.from_pretrained(
+                vae_model,
+                torch_dtype=torch.float16,
+                local_files_only=local_files_only,
                 device=self.device
             )
-            self.prompt_cache = FixedSizeDict(32)
-            print("Prepared compel")
-        else:
-            self.compel = None
+            fix_seed(self.pipe)
 
-        self.generator = torch.Generator(device=self.device).manual_seed(0)
-        
-        if warmup:
-            warmup_shape = [int(e) for e in warmup.split("x")]
-            images = np.zeros(warmup_shape, dtype=np.float32)
-            for i in range(2):
-                print(f"Warmup {warmup} {i+1}/2")
-                start_time = time.time()
-                self.run(
-                    images,
-                    prompt="warmup",
-                    num_inference_steps=2,
-                    strength=1.0
+            print(f"Model loaded on {self.device}")
+
+            config = CompilationConfig.Default()
+            config.enable_xformers = True
+            config.enable_triton = True
+            config.enable_cuda_graph = True
+            self.pipe = compile(self.pipe, config=config)
+
+            print("Model compiled")
+
+            self.pipe.to(device=self.device, dtype=torch.float16)
+            self.pipe.set_progress_bar_config(disable=True)
+
+            print(f"Model moved to {self.device}", flush=True)
+            
+            if use_compel:
+                self.compel = Compel(
+                    tokenizer=[self.pipe.tokenizer, self.pipe.tokenizer_2],
+                    text_encoder=[self.pipe.text_encoder, self.pipe.text_encoder_2],
+                    returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
+                    requires_pooled=[False, True],
+                    device=self.device
                 )
-            print("Warmup finished", flush=True)
+                self.prompt_cache = FixedSizeDict(32)
+                print("Prepared compel")
+            else:
+                self.compel = None
+
+            self.generator = torch.Generator(device=self.device).manual_seed(0)
+            
+            if warmup:
+                warmup_shape = [int(e) for e in warmup.split("x")]
+                images = np.zeros(warmup_shape, dtype=np.float32)
+                for i in range(2):
+                    print(f"Warmup {warmup} {i+1}/2")
+                    start_time = time.time()
+                    self.run(
+                        images,
+                        prompt="warmup",
+                        num_inference_steps=2,
+                        strength=1.0
+                    )
+                print("Warmup finished", flush=True)
             
     def embed_prompt(self, prompt):
         if prompt not in self.prompt_cache:

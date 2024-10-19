@@ -75,7 +75,7 @@ class ImageProcessor:
 
                 if inference_frame_count % 30 == 0:
                     inference_time_ms = (time.time() - start_time) * 1000
-                    print(f"Inference time: {inference_time_ms:.2f} ms")
+                    print(f"#{gpu_id} inference time: {inference_time_ms:.2f} ms")
                 inference_frame_count += 1
 
             except queue.Empty:
@@ -84,7 +84,7 @@ class ImageProcessor:
     def stop(self):
         self.input_queue.put(None)
         for thread in self.threads:
-            self.thread.join()
+            thread.join()
 
 async def index(request):
     with open("index.html", "r") as f:
@@ -157,8 +157,7 @@ if __name__ == '__main__':
     app = web.Application()
     app['websockets'] = set()
     
-    # You can specify the GPU ID here, or leave it as None to use the default
-    app['image_processor'] = ImageProcessor(gpu_id=0)  # Use GPU 0, for example
+    app['image_processor'] = ImageProcessor()
     
     app.router.add_get('/', index)
     app.router.add_get('/ws', websocket_handler)
