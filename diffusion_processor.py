@@ -42,7 +42,7 @@ class DiffusionProcessor:
             )
             fix_seed(self.pipe)
 
-            print(f"Model loaded on {self.device}")
+            print(f"{self.device}: model loaded")
 
             config = CompilationConfig.Default()
             config.enable_xformers = True
@@ -50,12 +50,12 @@ class DiffusionProcessor:
             config.enable_cuda_graph = True
             self.pipe = compile(self.pipe, config=config)
 
-            print("Model compiled")
+            print(f"{self.device}: model compiled")
 
             self.pipe.to(device=self.device, dtype=torch.float16)
             self.pipe.set_progress_bar_config(disable=True)
 
-            print(f"Model moved to {self.device}", flush=True)
+            print(f"{self.device}: model moved", flush=True)
             
             if use_compel:
                 self.compel = Compel(
@@ -66,7 +66,7 @@ class DiffusionProcessor:
                     device=self.device
                 )
                 self.prompt_cache = FixedSizeDict(32)
-                print("Prepared compel")
+                print(f"{self.device}: prepared compel")
             else:
                 self.compel = None
 
@@ -76,7 +76,7 @@ class DiffusionProcessor:
                 warmup_shape = [int(e) for e in warmup.split("x")]
                 images = np.zeros(warmup_shape, dtype=np.float32)
                 for i in range(2):
-                    print(f"Warmup {warmup} {i+1}/2")
+                    print(f"{self.device}: warmup {warmup} {i+1}/2")
                     start_time = time.time()
                     self.run(
                         images,
@@ -84,12 +84,12 @@ class DiffusionProcessor:
                         num_inference_steps=2,
                         strength=1.0
                     )
-                print("Warmup finished", flush=True)
+                print(f"{self.device}: warmup finished", flush=True)
             
     def embed_prompt(self, prompt):
         if prompt not in self.prompt_cache:
             with torch.no_grad():
-                print("embedding prompt", prompt)
+                print(f"{self.device}: embedding prompt", prompt)
                 self.prompt_cache[prompt] = self.compel(prompt)
         return self.prompt_cache[prompt]
     

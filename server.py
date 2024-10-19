@@ -24,7 +24,7 @@ settings = Settings()
 class ImageProcessor:
     def __init__(self):
         self.input_queue = queue.Queue(maxsize=1)
-        self.output_queue = queue.Queue(maxsize=1)
+        self.output_queue = queue.Queue()#maxsize=1)
         self.threads = []
         
         gpu_count = torch.cuda.device_count()
@@ -71,6 +71,7 @@ class ImageProcessor:
                 try:
                     self.output_queue.put(buffer, block=False)
                 except queue.Full:
+                    logger.info(f"#{gpu_id}: dropping output frame, output queue full")
                     pass
 
                 if inference_frame_count % 30 == 0:
@@ -79,6 +80,7 @@ class ImageProcessor:
                 inference_frame_count += 1
 
             except queue.Empty:
+                print(f"#{gpu_id}: no input images to process")
                 pass
 
     def stop(self):
@@ -100,7 +102,10 @@ async def websocket_handler(request):
     try:
         async for msg in ws:
             if msg.type == WSMsgType.BINARY:
+                
+                # remove an old frame from the queue to make room for a new one
                 if processor.input_queue.full():
+                    print(f"dropping input frame, input queue full")
                     try:
                         processor.input_queue.get_nowait()
                     except queue.Empty:
