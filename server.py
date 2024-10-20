@@ -1,92 +1,20 @@
-import asyncio
 import logging
 from aiohttp import web, WSMsgType
-import cv2
 import numpy as np
-import threading
 import queue
 from diffusion_processor import DiffusionProcessor
 import time
 from dataclasses import dataclass
 from typing import Optional
-import torch
+from queue import Queue, Empty
+import threading
+import zmq
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 
-@dataclass
-class Settings:
-    prompt: str = "a psychedelic landscape"
-    jpeg_quality: int = 50
-
-settings = Settings()
-
-class ImageProcessor:
-    def __init__(self):
-        self.input_queue = queue.Queue(maxsize=1)
-        self.output_queue = queue.Queue()#maxsize=1)
-        self.threads = []
-        
-        gpu_count = torch.cuda.device_count()
-        logger.info(f"Total number of available GPUs: {gpu_count}")
-        
-        for i in range(gpu_count):
-            thread = threading.Thread(target=self.process_images, args=(i,))
-            logger.info(f"ImageProcessor initialized with GPU ID: {i}")
-            thread.start()
-            self.threads.append(thread)
-
-    def process_images(self, gpu_id):
-        processor = DiffusionProcessor(local_files_only=False, warmup="1x1024x1024x3", gpu_id=gpu_id)
-        logger.info(f"DiffusionProcessor warmed up on GPU ID: {gpu_id}")
-        
-        inference_frame_count = 0
-        while True:
-            try:
-                data = self.input_queue.get(timeout=1)
-                if data is None:
-                    self.input_queue.put(None)
-                    break
-
-                start_time = time.time()
-
-                nparr = np.frombuffer(data, np.uint8)
-                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
-
-                img = np.float32(np.fliplr(img)) / 255
-                filtered_img = processor.run(
-                    images=[img],
-                    prompt=settings.prompt,
-                    num_inference_steps=2,
-                    strength=0.7
-                )[0]
-                filtered_img = np.uint8(filtered_img * 255)
-
-                encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), settings.jpeg_quality]
-                _, buffer = cv2.imencode(".jpg", cv2.cvtColor(filtered_img, cv2.COLOR_RGB2BGR), encode_params)
-                buffer = buffer.tobytes()
-
-                try:
-                    self.output_queue.put(buffer, block=False)
-                except queue.Full:
-                    logger.info(f"#{gpu_id}: dropping output frame, output queue full")
-                    pass
-
-                if inference_frame_count % 30 == 0:
-                    inference_time_ms = (time.time() - start_time) * 1000
-                    print(f"#{gpu_id} inference time: {inference_time_ms:.2f} ms")
-                inference_frame_count += 1
-
-            except queue.Empty:
-                print(f"#{gpu_id}: no input images to process")
-                pass
-
-    def stop(self):
-        self.input_queue.put(None)
-        for thread in self.threads:
-            thread.join()
+prompt = "a psychedelic landscape"
 
 async def index(request):
     with open("index.html", "r") as f:
@@ -97,31 +25,18 @@ async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    processor = request.app['image_processor']
+    incoming_client_frames = request.app['incoming_client_frames']
+    processed_frames = request.app['processed_frames']
 
     try:
         async for msg in ws:
             if msg.type == WSMsgType.BINARY:
-                
-                # remove an old frame from the queue to make room for a new one
-                if processor.input_queue.full():
-                    print(f"dropping input frame, input queue full")
-                    try:
-                        processor.input_queue.get_nowait()
-                    except queue.Empty:
-                        pass
-                
-                processor.input_queue.put_nowait(msg.data)
-
-                try:
-                    buffer = processor.output_queue.get(block=False)
-                    await ws.send_bytes(buffer)
-                except queue.Empty:
-                    pass
+                incoming_client_frames.put(msg.data)
+                while not processed_frames.empty():
+                    processed_frame = processed_frames.get()
+                    await ws.send_bytes(processed_frame)
             elif msg.type == WSMsgType.ERROR:
-                logger.error(
-                    "WebSocket connection closed with exception %s", ws.exception()
-                )
+                logger.error("WebSocket connection closed with exception %s", ws.exception())
     finally:
         pass
 
@@ -132,41 +47,85 @@ async def set_parameters(request):
     
     if 'prompt' in request.query:
         new_prompt = request.query['prompt']
-        settings.prompt = new_prompt
-        response.append(f"Prompt updated to: {settings.prompt}")
-    
-    if 'quality' in request.query:
-        try:
-            new_quality = int(request.query['quality'])
-            if 1 <= new_quality <= 100:
-                settings.jpeg_quality = new_quality
-                response.append(f"JPEG quality updated to: {settings.jpeg_quality}")
-            else:
-                response.append("Invalid quality value. Please use a number between 1 and 100.")
-        except ValueError:
-            response.append("Invalid quality value. Please provide an integer.")
+        prompt = new_prompt
+        response.append(f"Prompt updated to: {prompt}")
     
     if not response:
         return web.Response(status=400, text="No valid parameters provided.")
     
     return web.Response(text="\n".join(response))
 
+def distribute_loop(app):
+    incoming_client_frames = app['incoming_client_frames']
+    
+    context = zmq.Context()
+    socket = context.socket(zmq.PUSH)
+    ipc_path = os.path.join(os.getcwd(), ".distribute_socket")
+    socket.bind(f"ipc://{ipc_path}")
+    socket.setsockopt(zmq.LINGER, 0)
+
+    while not app['shutdown'].is_set():
+        try:
+            frame = incoming_client_frames.get(timeout=1)
+            timestamp = time.time()
+            socket.send_multipart([str(timestamp).encode(), frame, prompt.encode()])
+        except Empty:
+            continue
+        
+    socket.close()
+    context.destroy()
+        
+def collect_loop(app):
+    processed_frames = app['processed_frames']
+    
+    context = zmq.Context()
+    socket = context.socket(zmq.PULL)
+    ipc_path = os.path.join(os.getcwd(), ".collect_socket")
+    socket.bind(f"ipc://{ipc_path}")
+    socket.setsockopt(zmq.RCVTIMEO, 1000)
+    socket.setsockopt(zmq.LINGER, 0)
+    
+    recent_timestamp = 0
+    while not app['shutdown'].is_set():
+        try:
+            timestamp, frame = socket.recv_multipart()
+            timestamp = float(timestamp)
+            if timestamp > recent_timestamp:
+                recent_timestamp = timestamp
+                processed_frames.put(frame)
+            else:
+                print(f"dropping out-of-order frame: {1000*(recent_timestamp - timestamp):.1f}ms late")
+        except zmq.Again:
+            continue
+
+    socket.close()
+    context.destroy()
+
 async def on_shutdown(app):
+    print("Starting shutdown")
+    app['shutdown'].set()
     for ws in set(app['websockets']):
         await ws.close(code=WSMsgType.CLOSE, message="Server shutdown")
     app['websockets'].clear()
+    app['distribute_thread'].join()
+    app['collect_thread'].join()
     
-    app['image_processor'].stop()
+async def on_startup(app):
+    app['incoming_client_frames'] = Queue()
+    app['processed_frames'] = Queue()
+    app['shutdown'] = threading.Event()
+    app['distribute_thread'] = threading.Thread(target=distribute_loop, args=(app,), daemon=True)
+    app['collect_thread'] = threading.Thread(target=collect_loop, args=(app,), daemon=True)
+    app['distribute_thread'].start()
+    app['collect_thread'].start()
 
 if __name__ == '__main__':
     app = web.Application()
     app['websockets'] = set()
-    
-    app['image_processor'] = ImageProcessor()
-    
     app.router.add_get('/', index)
     app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/set', set_parameters)
     app.on_shutdown.append(on_shutdown)
+    app.on_startup.append(on_startup)
 
     web.run_app(app, access_log=None, port=8080)

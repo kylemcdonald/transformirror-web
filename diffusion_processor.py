@@ -2,6 +2,7 @@ import re
 import numpy as np
 import time
 from fixed_seed import fix_seed
+import cv2
 
 from sfast.compilers.stable_diffusion_pipeline_compiler import (
     compile,
@@ -131,3 +132,17 @@ class DiffusionProcessor:
                 output_type="np",
                 **kwargs
             ).images
+
+    def __call__(self, img, prompt):        
+        img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+
+        img = np.float32(img) / 255
+        filtered_img = self.run(
+            images=[img],
+            prompt=prompt,
+            num_inference_steps=2,
+            strength=0.7
+        )[0]
+        filtered_img = np.uint8(filtered_img * 255)
+        
+        return filtered_img
