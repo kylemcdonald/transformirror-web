@@ -18,7 +18,7 @@ from compel import Compel, ReturnedEmbeddingsType
 from fixed_size_dict import FixedSizeDict
 
 class DiffusionProcessor:
-    def __init__(self, warmup=None, local_files_only=True, gpu_id=0, use_compel=True):
+    def __init__(self, warmup="1x1024x1024x3", local_files_only=True, gpu_id=0, use_compel=True):
         base_model = "stabilityai/sdxl-turbo"
         vae_model = "madebyollin/taesdxl"
 
@@ -87,6 +87,9 @@ class DiffusionProcessor:
                     )
                 print(f"{self.device}: warmup finished", flush=True)
             
+            self.call_durations = []
+            self.last_print_time = time.time()
+
     def embed_prompt(self, prompt):
         if prompt not in self.prompt_cache:
             with torch.no_grad():
@@ -133,16 +136,31 @@ class DiffusionProcessor:
                 **kwargs
             ).images
 
-    def __call__(self, img, prompt):        
+    def __call__(self, img, prompt):
+        start_time = time.time()
+        
         img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
 
         img = np.float32(img) / 255
         filtered_img = self.run(
             images=[img],
-            prompt=prompt,
+            prompt=prompt.decode("utf-8"),
             num_inference_steps=2,
             strength=0.7
         )[0]
         filtered_img = np.uint8(filtered_img * 255)
+        
+        end_time = time.time()
+        duration = (end_time - start_time) * 1000  # Convert to milliseconds
+        self.call_durations.append(duration)
+        
+        current_time = time.time()
+        if current_time - self.last_print_time >= 5:
+            mean_duration = np.mean(self.call_durations)
+            min_duration = np.min(self.call_durations)
+            max_duration = np.max(self.call_durations)
+            print(f"diffusion mean: {mean_duration:.1f}ms, min: {min_duration:.1f}ms, max: {max_duration:.1f}ms")
+            self.call_durations.clear()
+            self.last_print_time = current_time
         
         return filtered_img

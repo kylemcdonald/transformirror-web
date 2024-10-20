@@ -14,8 +14,6 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 
-prompt = "a psychedelic landscape"
-
 async def index(request):
     with open("index.html", "r") as f:
         content = f.read()
@@ -47,8 +45,8 @@ async def set_parameters(request):
     
     if 'prompt' in request.query:
         new_prompt = request.query['prompt']
-        prompt = new_prompt
-        response.append(f"Prompt updated to: {prompt}")
+        request.app['settings']['prompt'] = new_prompt
+        response.append(f"Prompt updated to: {new_prompt}")
     
     if not response:
         return web.Response(status=400, text="No valid parameters provided.")
@@ -68,7 +66,7 @@ def distribute_loop(app):
         try:
             frame = incoming_client_frames.get(timeout=1)
             timestamp = time.time()
-            socket.send_multipart([str(timestamp).encode(), frame, prompt.encode()])
+            socket.send_multipart([str(timestamp).encode(), frame, app['settings']['prompt'].encode()])
         except Empty:
             continue
         
@@ -111,6 +109,7 @@ async def on_shutdown(app):
     app['collect_thread'].join()
     
 async def on_startup(app):
+    app['settings'] = {'prompt': 'a psychedelic landscape'}
     app['incoming_client_frames'] = Queue()
     app['processed_frames'] = Queue()
     app['shutdown'] = threading.Event()

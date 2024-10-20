@@ -43,6 +43,7 @@ try:
 
             # encode the image
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
+            processed_img = cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR)
             _, buffer = cv2.imencode(".jpg", processed_img, encode_param)
 
             push_socket.send_multipart([timestamp, buffer])
