@@ -119,6 +119,9 @@
         videoFrameCallbackId, debugInfoVisible = false, isMobile = false, isUsingRearCamera = false;
 
     let lastThirtySendFrames = [], lastThirtyReceiveFrames = [], lastThirtySendBytes = [], lastThirtyReceiveBytes = [];
+    
+    // Add this line to declare the video element
+    let videoElement;
 
     async function setup() {
       isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -177,6 +180,12 @@
         canvas.height = settings.height;
         ctx = canvas.getContext('2d', { willReadFrequently: true });
 
+        // Create the video element here
+        videoElement = document.createElement('video');
+        videoElement.srcObject = localStream;
+        videoElement.autoplay = true;
+        videoElement.playsInline = true;
+
         const remoteCanvas = document.getElementById('remoteVideo');
         remoteCanvas.width = 1024;
         remoteCanvas.height = 1024;
@@ -220,55 +229,49 @@
     }
 
     function requestVideoFrame() {
-      videoFrameCallbackId = requestAnimationFrame(processVideoFrame);
+        videoFrameCallbackId = videoElement.requestVideoFrameCallback(processVideoFrame);
     }
 
-    function processVideoFrame() {
-      if (!localStream) {
+    function processVideoFrame(now, metadata) {
+      if (!localStream || !videoElement) {
         requestVideoFrame();
         return;
       }
 
-      const video = document.createElement('video');
-      video.srcObject = localStream;
-      video.onloadedmetadata = () => {
-        const size = Math.min(video.videoWidth, video.videoHeight);
+      const size = Math.min(videoElement.videoWidth, videoElement.videoHeight);
 
-        canvas.width = size;
-        canvas.height = size;
+      canvas.width = size;
+      canvas.height = size;
 
-        if (isUsingRearCamera) {
-          ctx.drawImage(video, 0, 0, size, size, 0, 0, size, size);
-        } else {
-          ctx.save();
-          ctx.scale(-1, 1);
-          ctx.drawImage(video, 0, 0, size, size, -size, 0, size, size);
-          ctx.restore();
-        }
-        
-        canvas.toBlob((blob) => {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(blob);
-            bytesSent += blob.size;
-            lastBytesSent = blob.size;
-            sendFrameCount++;
+      if (isUsingRearCamera) {
+        ctx.drawImage(videoElement, 0, 0, size, size, 0, 0, size, size);
+      } else {
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.drawImage(videoElement, 0, 0, size, size, -size, 0, size, size);
+        ctx.restore();
+      }
+      
+      canvas.toBlob((blob) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(blob);
+          bytesSent += blob.size;
+          lastBytesSent = blob.size;
+          sendFrameCount++;
 
-            const frameInfo = { timestamp: Date.now(), bytes: blob.size };
-            lastThirtySendFrames.push(frameInfo);
-            lastThirtySendBytes.push(blob.size);
+          const frameInfo = { timestamp: now, bytes: blob.size };
+          lastThirtySendFrames.push(frameInfo);
+          lastThirtySendBytes.push(blob.size);
 
-            if (lastThirtySendFrames.length > 30) {
-              lastThirtySendFrames.shift();
-              lastThirtySendBytes.shift();
-            }
-
-            updateDebugInfo();
+          if (lastThirtySendFrames.length > 30) {
+            lastThirtySendFrames.shift();
+            lastThirtySendBytes.shift();
           }
-          requestVideoFrame();
-        }, 'image/jpeg', quality);
-      };
 
-      video.play();
+          updateDebugInfo();
+        }
+        requestVideoFrame();
+      }, 'image/jpeg', quality);
     }
 
     function updateDebugInfo() {
@@ -309,8 +312,6 @@
       if (event.type === 'keydown' && event.key === 'Enter') {
         event.preventDefault();
         sendPrompt(prompt);
-      } else if (event.type === 'input') {
-        console.log('Input changed:', prompt);
       }
     }
 
@@ -329,28 +330,18 @@
     function cleanup() {
       if (ws) ws.close();
       if (localStream) localStream.getTracks().forEach(track => track.stop());
-      if (videoFrameCallbackId) cancelAnimationFrame(videoFrameCallbackId);
+      if (videoFrameCallbackId) {
+        if (videoElement.cancelVideoFrameCallback) {
+          videoElement.cancelVideoFrameCallback(videoFrameCallbackId);
+        } else {
+          cancelAnimationFrame(videoFrameCallbackId);
+        }
+      }
     }
 
     function handleKeyboardVisibility() {
       const body = document.body;
       const remoteVideo = document.getElementById('remoteVideo');
-      
-      window.addEventListener('resize', () => {
-        if (document.activeElement.tagName === 'INPUT') {
-          body.classList.add('keyboard-visible');
-        } else {
-          body.classList.remove('keyboard-visible');
-        }
-      });
-
-      document.getElementById('promptInput').addEventListener('focus', () => {
-        body.classList.add('keyboard-visible');
-      });
-
-      document.getElementById('promptInput').addEventListener('blur', () => {
-        body.classList.remove('keyboard-visible');
-      });
     }
 
     window.addEventListener('beforeunload', cleanup);
