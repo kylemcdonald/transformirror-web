@@ -1,5 +1,6 @@
 aiohttp
 opencv-python-headless
+huggingface-hub==0.25.2
 diffusers==0.23.1
 transformers
 gradio==4.7.1
