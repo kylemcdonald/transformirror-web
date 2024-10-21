@@ -37,7 +37,6 @@ try:
             nparr = np.frombuffer(frame_data, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = np.fliplr(img)
 
             processed_img = processor(img, prompt)
 

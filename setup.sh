@@ -4,8 +4,7 @@ git clone https://github.com/kylemcdonald/transformirror-web.git
 cd transformirror-web
 pip3 install -r requirements.txt
 
-IP_ADDRESS=$(ip -4 addr show eno1 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/C=US/ST=State/L=City/O=Organization/OU=OrganizationalUnit/CN=$IP_ADDRESS"
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/C=US/ST=State/L=City/O=Organization/OU=OrganizationalUnit/CN=transformirror"
 python3 download_files.py
 
 sudo ./install-workers.sh

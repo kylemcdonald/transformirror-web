@@ -12,7 +12,7 @@ After=network-online.target
 [Service]
 WorkingDirectory=$(pwd)
 ExecStart=$(pwd)/run-workers.sh
-User=ubuntu
+User=root
 Restart=always
 [Install]
 WantedBy=multi-user.target
