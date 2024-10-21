@@ -95,6 +95,20 @@
       appearance: none;
       background-color: white;
     }
+
+    /* Add these new styles for the local video */
+    #localVideo {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      width: 150px;
+      height: 150px;
+      object-fit: cover;
+      border: 2px solid white;
+      border-radius: 10px;
+      z-index: 2000;
+      display: none; /* Hide by default */
+    }
   </style>
 </head>
 <body>
@@ -112,6 +126,8 @@
     <input type="text" id="promptInput" placeholder="Enter prompt" autocomplete="off" autocorrect="off" autocapitalize="off">
   </form>
 
+  <video id="localVideo" autoplay playsinline muted></video>
+
   <script>
     const quality = 0.5;
     let ws, localStream, canvas, ctx, startTime, sendFrameCount = 0, receiveFrameCount = 0,
@@ -122,6 +138,9 @@
     
     // Add this line to declare the video element
     let videoElement;
+
+    // Add this new variable
+    let showLocalVideo = false;
 
     async function setup() {
       isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -141,8 +160,14 @@
       debugInfoVisible = urlParams.get('debug') === 'true';
       document.getElementById('debugInfo').style.display = debugInfoVisible ? 'block' : 'none';
 
+      // Add this new line to check for the camera flag
+      showLocalVideo = urlParams.get('camera') === 'true';
+
       const showPrompt = urlParams.get('prompt') === 'true';
       document.getElementById('promptForm').style.display = showPrompt ? 'block' : 'none';
+
+      // Add this line to show/hide the local video based on the flag
+      document.getElementById('localVideo').style.display = showLocalVideo ? 'block' : 'none';
     }
 
     async function start() {
@@ -180,7 +205,12 @@
         canvas.height = settings.height;
         ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-        // Create the video element here
+        // Set up the local video display
+        const localVideoElement = document.getElementById('localVideo');
+        localVideoElement.srcObject = localStream;
+        localVideoElement.style.transform = isUsingRearCamera ? 'none' : 'scaleX(-1)';
+
+        // Create the video element for frame processing
         videoElement = document.createElement('video');
         videoElement.srcObject = localStream;
         videoElement.autoplay = true;
@@ -238,17 +268,23 @@
         return;
       }
 
-      const size = Math.min(videoElement.videoWidth, videoElement.videoHeight);
+      const videoWidth = videoElement.videoWidth;
+      const videoHeight = videoElement.videoHeight;
+      const size = Math.min(videoWidth, videoHeight);
 
       canvas.width = size;
       canvas.height = size;
 
+      // Calculate offsets to center the crop
+      const xOffset = (videoWidth - size) / 2;
+      const yOffset = (videoHeight - size) / 2;
+
       if (isUsingRearCamera) {
-        ctx.drawImage(videoElement, 0, 0, size, size, 0, 0, size, size);
+        ctx.drawImage(videoElement, xOffset, yOffset, size, size, 0, 0, size, size);
       } else {
         ctx.save();
         ctx.scale(-1, 1);
-        ctx.drawImage(videoElement, 0, 0, size, size, -size, 0, size, size);
+        ctx.drawImage(videoElement, xOffset, yOffset, size, size, -size, 0, size, size);
         ctx.restore();
       }
       
