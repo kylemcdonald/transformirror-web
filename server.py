@@ -1,221 +1,136 @@
-import asyncio
-import json
 import logging
-import cv2
-from aiohttp import web
-from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack, RTCConfiguration, RTCIceServer
-from aiortc.contrib.media import MediaRelay
-import threading
-import queue
+from aiohttp import web, WSMsgType
 import numpy as np
+import queue
 from diffusion_processor import DiffusionProcessor
 import time
+from dataclasses import dataclass
+from typing import Optional
+from queue import Queue, Empty
+import threading
+import zmq
+import os
 import ssl
 
-# Add these imports
-from osc_socket import OscSocket
-from dataclasses import dataclass
-
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("pc")
-
-pcs = set()
-relay = MediaRelay()
-
-# Modify the Settings dataclass to include a running flag
-@dataclass
-class Settings:
-    prompt: str = "a psychedelic landscape"
-    osc_host: str = "0.0.0.0"
-    osc_port: int = 8888
-    running: bool = True
-
-settings = Settings()
-
-def osc_worker(settings):
-    osc = OscSocket(settings.osc_host, settings.osc_port)
-    while settings.running:
-        msg = osc.recv()
-        if msg is None:
-            continue
-        if msg.address == "/prompt":
-            prompt = ' '.join(msg.params)
-            settings.prompt = prompt
-            print(f"OSC: Updated prompt to '{prompt}'")
-    osc.close()
-
-def filter_worker(input_queue, output_queue, settings):
-    processor = DiffusionProcessor(local_files_only=False, warmup="1x1024x1024x3")
-    inference_frame_count = 0
-    while True:
-        start_time = time.time()
-        img = input_queue.get()
-        if img is None:
-            break
-        
-        img = np.float32(np.fliplr(img)) / 255
-        filtered_img = processor.run(
-            images=[img],
-            prompt=settings.prompt,
-            num_inference_steps=2,
-            strength=0.7
-        )[0]
-        filtered_img = np.uint8(filtered_img * 255)
-        
-        try:
-            output_queue.put(filtered_img, block=False)
-        except queue.Full:
-            output_queue.get()
-            output_queue.put(filtered_img, block=False)
-            
-        if inference_frame_count % 30 == 0:
-            inference_time_ms = (time.time() - start_time) * 1000
-            print(f"Inference time: {inference_time_ms:.2f} ms")
-        inference_frame_count += 1
-
-class VideoTransformTrack(VideoStreamTrack):
-    """
-    A video stream track that transforms frames using a diffusion model.
-    """
-    def __init__(self, track, settings):
-        super().__init__()  # Don't forget this!
-        self.track = track
-        self.frame_num = 0
-        self.input_queue = queue.Queue(maxsize=1)
-        self.output_queue = queue.Queue(maxsize=1)
-        self.filter_thread = threading.Thread(target=filter_worker, args=(self.input_queue, self.output_queue, settings))
-        self.filter_thread.start()
-        self.latest_frame = None
-        self.settings = settings
-        self.new_frame_available = asyncio.Event()  # Add this line
-
-    async def recv(self):
-        while True:
-            frame = await self.track.recv()
-
-            # Convert frame to numpy array
-            img = frame.to_ndarray(format="rgb24")
-            
-            # Measure the time taken for resizing
-            start_time = time.time()
-            img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
-            resize_time_ms = (time.time() - start_time) * 1000  # Convert to milliseconds
-
-            try:
-                self.input_queue.put(img, block=False)
-            except queue.Full:
-                pass  # Skip this frame if the queue is full
-
-            try:
-                filtered_img = self.output_queue.get(block=False)
-                new_frame = frame.from_ndarray(filtered_img, format="rgb24")
-                new_frame.pts = frame.pts
-                new_frame.time_base = frame.time_base
-                self.latest_frame = new_frame
-                self.new_frame_available.set()  # Signal that a new frame is available
-            except queue.Empty:
-                pass
-        
-            if self.frame_num % 120 == 0:
-                print(f"Resize time: {resize_time_ms:.2f} ms")
-                print(f"Frame {self.frame_num} input resolution: {frame.width}x{frame.height}")
-                print(f"Frame {self.frame_num} resized resolution: {img.shape[1]}x{img.shape[0]}")
-                try:
-                    print(f"Frame {self.frame_num} output resolution: {self.latest_frame.width}x{self.latest_frame.height}")
-                except AttributeError:
-                    print(f"Frame {self.frame_num} output resolution: None")
-
-            self.frame_num += 1
-
-            if self.new_frame_available.is_set():
-                self.new_frame_available.clear()
-                return self.latest_frame
-
-            # If no new frame is available, yield control to allow other tasks to run
-            await asyncio.sleep(0)
-
-    def stop(self):
-        self.input_queue.put(None)  # Signal the worker to stop
-        self.filter_thread.join()
+logger = logging.getLogger("server")
 
 async def index(request):
-    content = open('index.html', 'r').read()
-    return web.Response(content_type='text/html', text=content)
+    with open("index.html", "r") as f:
+        content = f.read()
+    return web.Response(content_type="text/html", text=content)
 
-async def offer(request):
-    params = await request.json()
-    offer = RTCSessionDescription(sdp=params['sdp'], type=params['type'])
+async def websocket_handler(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
 
-    ice_servers = [
-        RTCIceServer(urls="stun:stun.l.google.com:19302"),
-    ]
-    config = RTCConfiguration(iceServers=ice_servers)
+    incoming_client_frames = request.app['incoming_client_frames']
+    processed_frames = request.app['processed_frames']
 
-    pc = RTCPeerConnection(configuration=config)
-    pcs.add(pc)
+    try:
+        async for msg in ws:
+            if msg.type == WSMsgType.BINARY:
+                incoming_client_frames.put(msg.data)
+                while not processed_frames.empty():
+                    processed_frame = processed_frames.get()
+                    await ws.send_bytes(processed_frame)
+            elif msg.type == WSMsgType.ERROR:
+                logger.error("WebSocket connection closed with exception %s", ws.exception())
+    finally:
+        pass
 
-    @pc.on('iceconnectionstatechange')
-    async def on_iceconnectionstatechange():
-        if pc.iceConnectionState == 'failed':
-            await pc.close()
-            pcs.discard(pc)
+    return ws
 
-    @pc.on('track')
-    def on_track(track):
-        if track.kind == 'video':
-            local_video = VideoTransformTrack(relay.subscribe(track), settings)
-            pc.addTrack(local_video)
+async def set_parameters(request):
+    response = []
+    
+    if 'prompt' in request.query:
+        new_prompt = request.query['prompt']
+        request.app['settings']['prompt'] = new_prompt
+        response.append(f"Prompt updated to: {new_prompt}")
+    
+    if not response:
+        return web.Response(status=400, text="No valid parameters provided.")
+    
+    return web.Response(text="\n".join(response))
 
-    await pc.setRemoteDescription(offer)
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
+def distribute_loop(app):
+    incoming_client_frames = app['incoming_client_frames']
+    
+    context = zmq.Context()
+    socket = context.socket(zmq.PUSH)
+    ipc_path = os.path.join(os.getcwd(), ".distribute_socket")
+    socket.bind(f"ipc://{ipc_path}")
+    socket.setsockopt(zmq.LINGER, 0)
 
-    response = {'sdp': pc.localDescription.sdp, 'type': pc.localDescription.type}
-    return web.Response(content_type='application/json', text=json.dumps(response))
+    while not app['shutdown'].is_set():
+        try:
+            frame = incoming_client_frames.get(timeout=1)
+            timestamp = time.time()
+            socket.send_multipart([str(timestamp).encode(), frame, app['settings']['prompt'].encode()])
+        except Empty:
+            continue
+        
+    socket.close()
+    context.destroy()
+        
+def collect_loop(app):
+    processed_frames = app['processed_frames']
+    
+    context = zmq.Context()
+    socket = context.socket(zmq.PULL)
+    ipc_path = os.path.join(os.getcwd(), ".collect_socket")
+    socket.bind(f"ipc://{ipc_path}")
+    socket.setsockopt(zmq.RCVTIMEO, 1000)
+    socket.setsockopt(zmq.LINGER, 0)
+    
+    recent_timestamp = 0
+    while not app['shutdown'].is_set():
+        try:
+            timestamp, frame = socket.recv_multipart()
+            timestamp = float(timestamp)
+            if timestamp > recent_timestamp:
+                recent_timestamp = timestamp
+                processed_frames.put(frame)
+            else:
+                print(f"dropping out-of-order frame: {1000*(recent_timestamp - timestamp):.1f}ms late")
+        except zmq.Again:
+            continue
+
+    socket.close()
+    context.destroy()
 
 async def on_shutdown(app):
-    print("Shutting down...")
+    print("Starting shutdown")
+    app['shutdown'].set()
+    for ws in set(app['websockets']):
+        await ws.close(code=WSMsgType.CLOSE, message="Server shutdown")
+    app['websockets'].clear()
+    app['distribute_thread'].join()
+    app['collect_thread'].join()
     
-    # Stop the OSC worker thread first
-    print("Stopping OSC worker thread...")
-    settings.running = False
-    app['osc_thread'].join(timeout=5)  # Add a timeout
-    if app['osc_thread'].is_alive():
-        print("OSC thread did not stop in time")
-
-    # Close peer connections and stop video transform tracks
-    coros = []
-    for pc in pcs:
-        coros.append(pc.close())
-        for sender in pc.getSenders():
-            if isinstance(sender.track, VideoTransformTrack):
-                sender.track.stop()
-    await asyncio.gather(*coros, return_exceptions=True)
-    pcs.clear()
-
-    print("Application shut down successfully.")
-
-async def set_prompt(request):
-    try:
-        new_prompt = request.query['prompt']
-        settings.prompt = new_prompt
-        return web.Response(text=f"Prompt updated to: {settings.prompt}")
-    except KeyError:
-        return web.Response(status=400, text="Invalid request: 'prompt' parameter is required")
+async def on_startup(app):
+    app['settings'] = {'prompt': 'a psychedelic landscape'}
+    app['incoming_client_frames'] = Queue()
+    app['processed_frames'] = Queue()
+    app['shutdown'] = threading.Event()
+    app['distribute_thread'] = threading.Thread(target=distribute_loop, args=(app,), daemon=True)
+    app['collect_thread'] = threading.Thread(target=collect_loop, args=(app,), daemon=True)
+    app['distribute_thread'].start()
+    app['collect_thread'].start()
 
 if __name__ == '__main__':
     app = web.Application()
+    app['websockets'] = set()
     app.router.add_get('/', index)
-    app.router.add_post('/offer', offer)
-    app.router.add_get('/prompt', set_prompt)
+    app.router.add_get('/ws', websocket_handler)
+    app.router.add_get('/set', set_parameters)
     app.on_shutdown.append(on_shutdown)
-    
+    app.on_startup.append(on_startup)
+
+    # Create an SSL context
     ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    ssl_context.load_cert_chain('cert.pem', 'key.pem')
-    
-    # Start the OSC worker thread
-    osc_thread = threading.Thread(target=osc_worker, args=(settings,), daemon=True)
-    osc_thread.start()
-    app['osc_thread'] = osc_thread  # Store the thread in the app for later access
-    
+    ssl_context.load_cert_chain('fullchain.pem', 'privkey.pem')
+
+    # Run the app with SSL
     web.run_app(app, access_log=None, port=8443, ssl_context=ssl_context)

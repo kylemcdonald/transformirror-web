@@ -39,19 +39,38 @@ git clone https://github.com/kylemcdonald/transformirror-web.git
 cd transformirror-web
 ```
 
-If Python3.10 is already installed:
+Install dependencies:
 
 ```
 sudo apt install -y python3 python3-pip git libturbojpeg libgl1-mesa-glx libglib2.0-0
 pip3 install -r requirements.txt
 ```
 
-Otherwise, install it with Anaconda:
+Run the server:
 
 ```
-conda create -y -n transformirror-web python=3.10
-conda activate transformirror-web
+python3 server.py
+```
+
+The server will run on port 8080. Access the application by opening a web browser and navigating to `http://localhost:8080`.
+
+To update the prompt, you can use the `/prompt` endpoint:
+
+```
+http://localhost:8080/prompt?prompt=your new prompt here
+```
+
+Replace "your new prompt here" with the desired prompt text.
+
+## RunPod
+
+```
+mkdir /workspace/.cache
+export HF_HOME=/workspace/.cache
+pip3 install -r requirements.txt
+apt update
+apt install libturbojpeg
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=transformirror-web"
-python server.py
 ```
