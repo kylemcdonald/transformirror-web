@@ -10,6 +10,7 @@ from queue import Queue, Empty
 import threading
 import zmq
 import os
+import ssl
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
@@ -127,4 +128,9 @@ if __name__ == '__main__':
     app.on_shutdown.append(on_shutdown)
     app.on_startup.append(on_startup)
 
-    web.run_app(app, access_log=None, port=8080)
+    # Create an SSL context
+    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ssl_context.load_cert_chain('fullchain.pem', 'privkey.pem')
+
+    # Run the app with SSL
+    web.run_app(app, access_log=None, port=8443, ssl_context=ssl_context)

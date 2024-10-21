@@ -144,6 +144,7 @@ class DiffusionProcessor:
         img = np.float32(img) / 255
         filtered_img = self.run(
             images=[img],
+            seed=0,
             prompt=prompt.decode("utf-8"),
             num_inference_steps=2,
             strength=0.7
