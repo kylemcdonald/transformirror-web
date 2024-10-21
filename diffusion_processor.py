@@ -17,30 +17,36 @@ import warnings
 from compel import Compel, ReturnedEmbeddingsType
 from fixed_size_dict import FixedSizeDict
 
+def build_pipe(local_files_only):
+    base_model = "stabilityai/sdxl-turbo"
+    vae_model = "madebyollin/taesdxl"
+
+    local_files_only = False
+
+    pipe = AutoPipelineForImage2Image.from_pretrained(
+        base_model,
+        torch_dtype=torch.float16,
+        variant="fp16",
+        local_files_only=local_files_only,
+    )
+
+    pipe.vaeAutoencoderTiny.from_pretrained(
+        vae_model,
+        torch_dtype=torch.float16,
+        local_files_only=local_files_only
+    )
+    
+    return pipe
+
 class DiffusionProcessor:
     def __init__(self, warmup="1x1024x1024x3", local_files_only=True, gpu_id=0, use_compel=True):
-        base_model = "stabilityai/sdxl-turbo"
-        vae_model = "madebyollin/taesdxl"
-
         warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
 
         self.device = torch.device(f"cuda:{gpu_id}")
         with torch.cuda.device(self.device):
             
             disable_progress_bar()
-            self.pipe = AutoPipelineForImage2Image.from_pretrained(
-                base_model,
-                torch_dtype=torch.float16,
-                variant="fp16",
-                local_files_only=local_files_only
-            )
-
-            self.pipe.vae = AutoencoderTiny.from_pretrained(
-                vae_model,
-                torch_dtype=torch.float16,
-                local_files_only=local_files_only,
-                device=self.device
-            )
+            self.pipe = build_pipe(local_files_only)
             fix_seed(self.pipe)
 
             print(f"{self.device}: model loaded")

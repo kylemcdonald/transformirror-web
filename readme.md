@@ -46,18 +46,25 @@ sudo apt install -y python3 python3-pip git libturbojpeg libgl1-mesa-glx libglib
 pip3 install -r requirements.txt
 ```
 
+Create self-signed SSL certificates using the IP address from eno1 interface:
+
+```
+IP_ADDRESS=$(ip -4 addr show eno1 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/C=US/ST=State/L=City/O=Organization/OU=OrganizationalUnit/CN=$IP_ADDRESS"
+```
+
 Run the server:
 
 ```
 python3 server.py
 ```
 
-The server will run on port 8080. Access the application by opening a web browser and navigating to `http://localhost:8080`.
+The server will run on port 8443. Access the application by opening a web browser and navigating to `https://<your-ip-address>:8443`.
 
-To update the prompt, you can use the `/prompt` endpoint:
+To update the prompt, you can use the `/set` endpoint:
 
 ```
-http://localhost:8080/prompt?prompt=your new prompt here
+http://localhost:8443/set?prompt=your new prompt here
 ```
 
 Replace "your new prompt here" with the desired prompt text.

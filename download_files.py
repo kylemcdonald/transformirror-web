@@ -1,1 +1,3 @@
-# implement this with a CPU-only downloader based on diffusion_processor.py
+from diffusion_processor import build_pipe
+
+pipe = build_pipe(local_files_only=False)
