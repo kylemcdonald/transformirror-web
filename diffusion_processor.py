@@ -30,7 +30,7 @@ def build_pipe(local_files_only):
         local_files_only=local_files_only,
     )
 
-    pipe.vaeAutoencoderTiny.from_pretrained(
+    pipe.vae = AutoencoderTiny.from_pretrained(
         vae_model,
         torch_dtype=torch.float16,
         local_files_only=local_files_only
