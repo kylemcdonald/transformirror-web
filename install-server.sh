@@ -1,5 +1,5 @@
-SERVICE_ID=transformirror-workers
-SERVICE_NAME="transformirror workers"
+SERVICE_ID=transformirror-server
+SERVICE_NAME="transformirror server"
 
 USER=$(whoami)
 SERVICES_DIR=/etc/systemd/system/
@@ -11,7 +11,7 @@ Wants=network-online.target
 After=network-online.target
 [Service]
 WorkingDirectory=$(pwd)
-ExecStart=$(pwd)/run-workers.sh
+ExecStart=$(pwd)/run-server.sh
 User=$USER
 Restart=always
 [Install]
