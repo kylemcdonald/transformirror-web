@@ -12,7 +12,7 @@ After=network-online.target
 [Service]
 WorkingDirectory=$(pwd)
 ExecStart=$(pwd)/run-server.sh
-User=$USER
+User=ubuntu
 Restart=always
 [Install]
 WantedBy=multi-user.target
