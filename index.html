@@ -136,11 +136,9 @@
 
     let lastThirtySendFrames = [], lastThirtyReceiveFrames = [], lastThirtySendBytes = [], lastThirtyReceiveBytes = [];
     
-    // Add this line to declare the video element
     let videoElement;
-
-    // Add this new variable
     let showLocalVideo = false;
+    let autoConnect = false; // Add this line
 
     async function setup() {
       isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -168,6 +166,13 @@
 
       // Add this line to show/hide the local video based on the flag
       document.getElementById('localVideo').style.display = showLocalVideo ? 'block' : 'none';
+
+      // Add these lines to check for the autoconnect flag
+      autoConnect = urlParams.get('autoconnect') === 'true';
+      if (autoConnect) {
+        document.getElementById('controls').style.display = 'none';
+        start();
+      }
     }
 
     async function start() {
@@ -175,8 +180,10 @@
       const deviceSelect = document.getElementById('videoDevices');
       const directionSelect = document.getElementById('cameraDirection');
       
-      startButton.textContent = 'Connecting...';
-      startButton.disabled = true;
+      if (!autoConnect) {
+        startButton.textContent = 'Connecting...';
+        startButton.disabled = true;
+      }
       
       const selectedDeviceId = deviceSelect.value;
       const selectedDirection = directionSelect.value;
@@ -252,9 +259,11 @@
         };
       } catch (error) {
         console.error('Error accessing camera:', error);
-        startButton.textContent = 'Start';
-        startButton.disabled = false;
-        alert('Error accessing camera. Please try again or select a different camera.');
+        if (!autoConnect) {
+          startButton.textContent = 'Start';
+          startButton.disabled = false;
+          alert('Error accessing camera. Please try again or select a different camera.');
+        }
       }
     }
 
