@@ -129,8 +129,8 @@ if __name__ == '__main__':
     app.on_startup.append(on_startup)
 
     # Create an SSL context
-    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    ssl_context.load_cert_chain('cert.pem', 'key.pem')
+    # ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    # ssl_context.load_cert_chain('cert.pem', 'key.pem')
 
     # Run the app with SSL
     web.run_app(app, access_log=None, port=8443)#, ssl_context=ssl_context)
