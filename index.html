@@ -224,7 +224,7 @@
         videoElement.playsInline = true;
 
         const remoteCanvas = document.getElementById('remoteVideo');
-        remoteCanvas.width = 1024;
+        remoteCanvas.width = 576;
         remoteCanvas.height = 1024;
         const remoteCtx = remoteCanvas.getContext('2d');
 
@@ -239,7 +239,7 @@
         ws.onmessage = (event) => {
           const img = new Image();
           img.onload = () => {
-            remoteCtx.drawImage(img, 0, 0, 1024, 1024);
+            remoteCtx.drawImage(img, 0, 0, 576, 1024);
             bytesReceived += event.data.size;
             lastBytesReceived = event.data.size;
             receiveFrameCount++;
