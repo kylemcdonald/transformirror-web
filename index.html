@@ -279,21 +279,24 @@
 
       const videoWidth = videoElement.videoWidth;
       const videoHeight = videoElement.videoHeight;
-      const size = Math.min(videoWidth, videoHeight);
 
-      canvas.width = size;
-      canvas.height = size;
+      // this logic assumes the video is landscape
+      const croppedWidth = videoHeight * 9 / 16;
+      const croppedHeight = videoHeight;
+
+      canvas.width = croppedWidth;
+      canvas.height = croppedHeight;
 
       // Calculate offsets to center the crop
-      const xOffset = (videoWidth - size) / 2;
-      const yOffset = (videoHeight - size) / 2;
+      const xOffset = (videoWidth - croppedWidth) / 2;
+      const yOffset = (videoHeight - croppedHeight) / 2;
 
       if (isUsingRearCamera) {
-        ctx.drawImage(videoElement, xOffset, yOffset, size, size, 0, 0, size, size);
+        ctx.drawImage(videoElement, xOffset, yOffset, croppedWidth, croppedHeight, 0, 0, croppedWidth, croppedHeight);
       } else {
         ctx.save();
         ctx.scale(-1, 1);
-        ctx.drawImage(videoElement, xOffset, yOffset, size, size, -size, 0, size, size);
+        ctx.drawImage(videoElement, xOffset, yOffset, croppedWidth, croppedHeight, -croppedWidth, 0, croppedWidth, croppedHeight);
         ctx.restore();
       }
       
