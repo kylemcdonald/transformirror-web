@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>Transformirror</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Transformirror">
@@ -224,8 +224,8 @@
         videoElement.playsInline = true;
 
         const remoteCanvas = document.getElementById('remoteVideo');
-        remoteCanvas.width = 576;
-        remoteCanvas.height = 1024;
+        remoteCanvas.width = 720;
+        remoteCanvas.height = 1280;
         const remoteCtx = remoteCanvas.getContext('2d');
 
         ws = new WebSocket(`wss://${window.location.host}/ws`);
@@ -239,7 +239,7 @@
         ws.onmessage = (event) => {
           const img = new Image();
           img.onload = () => {
-            remoteCtx.drawImage(img, 0, 0, 576, 1024);
+            remoteCtx.drawImage(img, 0, 0, 720, 1280);
             bytesReceived += event.data.size;
             lastBytesReceived = event.data.size;
             receiveFrameCount++;

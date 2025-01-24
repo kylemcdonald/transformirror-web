@@ -5,8 +5,8 @@ from diffusion_processor import DiffusionProcessor
 # Initialize the DiffusionProcessor
 processor = DiffusionProcessor(local_files_only=False, gpu_id=0)
 
-# Create a random 1024x576x3 image
-input_image = np.random.rand(1024, 576, 3).astype(np.float32)
+# Create a random 1280x720 image
+input_image = np.random.rand(1280, 720, 3).astype(np.float32)
 
 try:
     i = 0
