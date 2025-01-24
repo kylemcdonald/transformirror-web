@@ -129,6 +129,53 @@
   <video id="localVideo" autoplay playsinline muted></video>
 
   <script>
+  const prompts = [
+    "sailor moon anime drawing",
+    "homer simpson and bart simpson",
+    "mickey mouse cartoon",
+    "super mario and luigi",
+    "shrek and fiona",
+    "hello kitty",
+    "yellow minions with goggles",
+    "barbie dolls",
+    "neopets",
+    "pikachu",
+    "harry potter",
+    "frozen elsa",
+    "spider-man movie",
+    "wallace & gromit",
+    "iron man",
+    "star wars light sabre battle",
+    "elmo sesame street",
+    "mcdonald's",
+    "batman",
+    "buzz lightyear",
+    "bugs bunny cartoon",
+    "the little mermaid",
+    "snow white disney",
+    "charmander",
+    "winnie the pooh",
+    "peppa pig",
+    "my little pony",
+    "care bears",
+    "angry birds",
+    "lego mini figure",
+    "nike",
+    "supreme clothing",
+    "gucci logo",
+    "coca cola bottle",
+    "amazon box",
+    "apple iphone",
+    "starbucks coffee",
+    "taco bell",
+    "yoda",
+    "fedex box",
+    "sonic the hedgehog",
+    "link with trifoce",
+    "spock",
+    "kermit the frog"
+  ];
+
     const quality = 0.5;
     let ws, localStream, canvas, ctx, startTime, sendFrameCount = 0, receiveFrameCount = 0,
         bytesSent = 0, bytesReceived = 0, lastUpdateTime, lastBytesSent = 0, lastBytesReceived = 0,
@@ -158,21 +205,37 @@
       debugInfoVisible = urlParams.get('debug') === 'true';
       document.getElementById('debugInfo').style.display = debugInfoVisible ? 'block' : 'none';
 
-      // Add this new line to check for the camera flag
       showLocalVideo = urlParams.get('camera') === 'true';
 
       const showPrompt = urlParams.get('prompt') === 'true';
       document.getElementById('promptForm').style.display = showPrompt ? 'block' : 'none';
 
-      // Add this line to show/hide the local video based on the flag
       document.getElementById('localVideo').style.display = showLocalVideo ? 'block' : 'none';
 
-      // Add these lines to check for the autoconnect flag
       autoConnect = urlParams.get('autoconnect') === 'true';
       if (autoConnect) {
         document.getElementById('controls').style.display = 'none';
         start();
       }
+
+      // Add prompt cycling if enabled
+      if (urlParams.get('cycle') === 'true') {
+        startPromptCycling();
+      }
+    }
+
+    let promptCycleInterval;
+    let currentPromptIndex = 0;
+
+    function startPromptCycling() {
+      // Send the first prompt immediately
+      sendPrompt(prompts[currentPromptIndex]);
+      
+      // Set up the interval for cycling
+      promptCycleInterval = setInterval(() => {
+        currentPromptIndex = (currentPromptIndex + 1) % prompts.length;
+        sendPrompt(prompts[currentPromptIndex]);
+      }, 10000); // 10 seconds
     }
 
     async function start() {
@@ -384,6 +447,10 @@
         } else {
           cancelAnimationFrame(videoFrameCallbackId);
         }
+      }
+      // Add cleanup for prompt cycling
+      if (promptCycleInterval) {
+        clearInterval(promptCycleInterval);
       }
     }
 
