@@ -218,24 +218,25 @@
         start();
       }
 
-      // Add prompt cycling if enabled
-      if (urlParams.get('cycle') === 'true') {
-        startPromptCycling();
+      // Check for cycle duration parameter
+      const cycleDuration = parseInt(urlParams.get('cycle'));
+      if (!isNaN(cycleDuration) && cycleDuration > 0) {
+        startPromptCycling(cycleDuration * 1000); // Convert seconds to milliseconds
       }
     }
 
     let promptCycleInterval;
     let currentPromptIndex = 0;
 
-    function startPromptCycling() {
+    function startPromptCycling(duration) {
       // Send the first prompt immediately
       sendPrompt(prompts[currentPromptIndex]);
       
-      // Set up the interval for cycling
+      // Set up the interval for cycling with custom duration
       promptCycleInterval = setInterval(() => {
         currentPromptIndex = (currentPromptIndex + 1) % prompts.length;
         sendPrompt(prompts[currentPromptIndex]);
-      }, 10000); // 10 seconds
+      }, duration);
     }
 
     async function start() {
