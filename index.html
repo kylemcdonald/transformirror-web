@@ -74,6 +74,29 @@
       z-index: 1000;
       display: none;
     }
+    #credits {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      color: white;
+      z-index: 999;
+      font-family: Arial, sans-serif;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 15px;
+      border-radius: 8px;
+      backdrop-filter: blur(5px);
+      -webkit-backdrop-filter: blur(5px);
+    }
+    #credits h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    #credits p {
+      margin: 5px 0 0 0;
+      font-size: 14px;
+      opacity: 0.9;
+    }
     #promptForm {
       display: none;
       position: fixed;
@@ -122,6 +145,11 @@
   </div>
   <canvas id="remoteVideo"></canvas>
   <div id="debugInfo"></div>
+  <div id="credits">
+    <h1>Transformirror (2023)</h1>
+    <p>Kyle McDonald and Daito Manabe</p>
+    <p>@kcimc @daitomanabe</p>
+  </div>
   <form id="promptForm">
     <input type="text" id="promptInput" placeholder="Enter prompt" autocomplete="off" autocorrect="off" autocapitalize="off">
   </form>
