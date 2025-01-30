@@ -11,6 +11,7 @@ maximum_delay = 1
 context = zmq.Context()
 
 pull_socket = context.socket(zmq.PULL)
+pull_socket.set_hwm(1)
 ipc_path = os.path.join(os.getcwd(), ".distribute_socket")
 pull_socket.connect(f"ipc://{ipc_path}")
 pull_socket.setsockopt(zmq.RCVTIMEO, 1000)

@@ -11,9 +11,11 @@ import threading
 import zmq
 import os
 import ssl
+import heapq
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
+output_queue_size = 2
 
 async def index(request):
     with open("index.html", "r") as f:
@@ -59,6 +61,7 @@ def distribute_loop(app):
     
     context = zmq.Context()
     socket = context.socket(zmq.PUSH)
+    socket.set_hwm(2)
     ipc_path = os.path.join(os.getcwd(), ".distribute_socket")
     socket.bind(f"ipc://{ipc_path}")
     socket.setsockopt(zmq.LINGER, 0)
@@ -67,7 +70,11 @@ def distribute_loop(app):
         try:
             frame = incoming_client_frames.get(timeout=1)
             timestamp = time.time()
-            socket.send_multipart([str(timestamp).encode(), frame, app['settings']['prompt'].encode()])
+            try:
+                socket.send_multipart([str(timestamp).encode(), frame, app['settings']['prompt'].encode()], flags=zmq.DONTWAIT)
+            except zmq.Again:
+                # logger.info("dropping frame (HWM)")
+                pass
         except Empty:
             continue
         
@@ -85,15 +92,28 @@ def collect_loop(app):
     socket.setsockopt(zmq.LINGER, 0)
     
     recent_timestamp = 0
+    # Priority queue using heapq (min heap)
+    frame_queue = []
+    
     while not app['shutdown'].is_set():
         try:
-            timestamp, frame = socket.recv_multipart()
-            timestamp = float(timestamp)
-            if timestamp > recent_timestamp:
-                recent_timestamp = timestamp
-                processed_frames.put(frame)
-            else:
+            timestamp_bytes, frame = socket.recv_multipart()
+            timestamp = float(timestamp_bytes)
+            
+            # Drop frames older than our most recent processed frame
+            if timestamp <= recent_timestamp:
                 print(f"dropping out-of-order frame: {1000*(recent_timestamp - timestamp):.1f}ms late")
+                continue
+                
+            # Add frame to priority queue
+            heapq.heappush(frame_queue, (timestamp, frame))
+            
+            # If we have more than 4 frames, process the oldest one
+            if len(frame_queue) > output_queue_size:
+                oldest_timestamp, oldest_frame = heapq.heappop(frame_queue)
+                processed_frames.put(oldest_frame)
+                recent_timestamp = oldest_timestamp
+                
         except zmq.Again:
             continue
 
@@ -133,4 +153,4 @@ if __name__ == '__main__':
     ssl_context.load_cert_chain('cert.pem', 'key.pem')
 
     # Run the app with SSL
-    web.run_app(app, access_log=None, port=8443)#, ssl_context=ssl_context)
+    web.run_app(app, access_log=None, port=8443, ssl_context=ssl_context)
