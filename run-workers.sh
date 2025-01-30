@@ -12,8 +12,8 @@ trap cleanup SIGINT
     FINAL_DEVICE=$((TOTAL_DEVICES - 1))
     for i in $(seq 0 $FINAL_DEVICE); do
         echo "Starting worker $i"
-        export HF_HOME=/workspace/.cache
-        source venv/bin/activate
+        # export HF_HOME=/workspace/.cache
+        # source venv/bin/activate
         CUDA_VISIBLE_DEVICES=$i python3 worker.py &
     done
     wait
