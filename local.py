@@ -8,6 +8,7 @@ import numpy as np
 import os
 from queue import Queue, Empty
 from typing import Optional
+from trace_logger import TraceLogger
 
 # Constants
 CAPTURE_WIDTH = 1920
@@ -18,6 +19,9 @@ OUTPUT_QUEUE_SIZE = 2
 
 class WebcamApp:
     def __init__(self):
+        # Initialize logger
+        self.logger = TraceLogger("local", "webcam_display")
+        
         # Initialize ZMQ context
         self.context = zmq.Context()
         
@@ -55,8 +59,10 @@ class WebcamApp:
         
         try:
             while not self.shutdown.is_set():
+                self.logger.startEvent("capture_frame")
                 ret, frame = cap.read()
                 if not ret:
+                    self.logger.stopEvent("capture_frame")
                     continue
                 
                 # Get center crop
@@ -79,6 +85,7 @@ class WebcamApp:
                     ], flags=zmq.DONTWAIT)
                 except zmq.Again:
                     pass  # Drop frame if HWM reached
+                self.logger.stopEvent("capture_frame")
                 
         finally:
             cap.release()
@@ -97,12 +104,14 @@ class WebcamApp:
         
         while not self.shutdown.is_set():
             try:
+                self.logger.startEvent("collect_frame")
                 timestamp_bytes, frame = socket.recv_multipart()
                 timestamp = float(timestamp_bytes)
                 
                 # Drop frames older than our most recent processed frame
                 if timestamp <= recent_timestamp:
                     print(f"dropping out-of-order frame: {1000*(recent_timestamp - timestamp):.1f}ms late")
+                    self.logger.stopEvent("collect_frame")
                     continue
                 
                 # Add frame to priority queue
@@ -123,6 +132,7 @@ class WebcamApp:
                     )
                     self.processed_frames.put(pyglet_image)
                     recent_timestamp = oldest_timestamp
+                self.logger.stopEvent("collect_frame")
                     
             except zmq.Again:
                 continue
@@ -130,14 +140,17 @@ class WebcamApp:
         socket.close()
 
     def update(self, dt):
+        self.logger.startEvent("update_frame")
         try:
             # Get latest processed frame
             frame = self.processed_frames.get_nowait()
             self.current_frame = frame
         except Empty:
             pass
+        self.logger.stopEvent("update_frame")
 
     def on_draw(self):
+        self.logger.startEvent("draw_frame")
         self.window.clear()
         if self.current_frame:
             # Calculate scaling and position to center the image
@@ -159,6 +172,7 @@ class WebcamApp:
             
             # Draw the scaled, centered, and flipped image
             flipped_frame.blit(x, y, width=TARGET_SIZE * scale, height=scaled_height)
+        self.logger.stopEvent("draw_frame")
 
     def on_key_press(self, symbol, modifiers):
         if symbol == pyglet.window.key.ESCAPE:

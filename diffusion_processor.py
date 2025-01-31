@@ -3,6 +3,7 @@ import numpy as np
 import time
 from fixed_seed import fix_seed
 import cv2
+from trace_logger import TraceLogger
 
 from sfast.compilers.stable_diffusion_pipeline_compiler import (
     compile,
@@ -40,31 +41,37 @@ def build_pipe(local_files_only):
 
 class DiffusionProcessor:
     def __init__(self, warmup="1x1024x1024x3", local_files_only=True, gpu_id=0, use_compel=True):
+        process_name = f"worker_gpu{gpu_id}"
+        self.logger = TraceLogger("diffusion_processor", process_name)
         warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
 
         self.device = torch.device(f"cuda:{gpu_id}")
         with torch.cuda.device(self.device):
             
+            self.logger.startEvent("load_model")
             disable_progress_bar()
             self.pipe = build_pipe(local_files_only)
             fix_seed(self.pipe)
-
             print(f"{self.device}: model loaded")
+            self.logger.stopEvent("load_model")
 
+            self.logger.startEvent("compile_model")
             config = CompilationConfig.Default()
             config.enable_xformers = True
             config.enable_triton = True
             config.enable_cuda_graph = True
             self.pipe = compile(self.pipe, config=config)
-
             print(f"{self.device}: model compiled")
+            self.logger.stopEvent("compile_model")
 
+            self.logger.startEvent("move_model_to_device")
             self.pipe.to(device=self.device, dtype=torch.float16)
             self.pipe.set_progress_bar_config(disable=True)
-
             print(f"{self.device}: model moved", flush=True)
+            self.logger.stopEvent("move_model_to_device")
             
             if use_compel:
+                self.logger.startEvent("init_compel")
                 self.compel = Compel(
                     tokenizer=[self.pipe.tokenizer, self.pipe.tokenizer_2],
                     text_encoder=[self.pipe.text_encoder, self.pipe.text_encoder_2],
@@ -74,15 +81,18 @@ class DiffusionProcessor:
                 )
                 self.prompt_cache = FixedSizeDict(32)
                 print(f"{self.device}: prepared compel")
+                self.logger.stopEvent("init_compel")
             else:
                 self.compel = None
 
             self.generator = torch.Generator(device=self.device).manual_seed(0)
             
             if warmup:
+                self.logger.startEvent("warmup")
                 warmup_shape = [int(e) for e in warmup.split("x")]
                 images = np.zeros(warmup_shape, dtype=np.float32)
                 for i in range(2):
+                    self.logger.startEvent(f"warmup_iteration_{i+1}")
                     print(f"{self.device}: warmup {warmup} {i+1}/2")
                     start_time = time.time()
                     self.run(
@@ -91,23 +101,31 @@ class DiffusionProcessor:
                         num_inference_steps=2,
                         strength=1.0
                     )
+                    self.logger.stopEvent(f"warmup_iteration_{i+1}")
                 print(f"{self.device}: warmup finished", flush=True)
+                self.logger.stopEvent("warmup")
             
             self.call_durations = []
             self.last_print_time = time.time()
 
     def embed_prompt(self, prompt):
+        self.logger.startEvent("embed_prompt")
         if prompt not in self.prompt_cache:
             with torch.no_grad():
                 print(f"{self.device}: embedding prompt", prompt)
                 self.prompt_cache[prompt] = self.compel(prompt)
-        return self.prompt_cache[prompt]
+        result = self.prompt_cache[prompt]
+        self.logger.stopEvent("embed_prompt")
+        return result
     
     def meta_embed_prompt(self, prompt):
+        self.logger.startEvent("meta_embed_prompt")
         pattern = r'\("(.*?)"\s*,\s*"(.*?)"\)\.blend\((.*?),(.*?)\)'
         match = re.search(pattern, prompt)
         if not match:
-            return self.embed_prompt(prompt)
+            result = self.embed_prompt(prompt)
+            self.logger.stopEvent("meta_embed_prompt")
+            return result
         str1, str2, t1, t2 = match.groups()
         t1 = float(t1)
         t2 = float(t2)
@@ -115,9 +133,11 @@ class DiffusionProcessor:
         cond2, pool2 = self.embed_prompt(str2)
         cond = cond1 * t1 + cond2 * t2
         pool = pool1 * t1 + pool2 * t2
+        self.logger.stopEvent("meta_embed_prompt")
         return cond, pool
     
     def run(self, images, prompt, num_inference_steps, strength, seed=None):
+        self.logger.startEvent("run_inference")
         with torch.cuda.device(self.device):
             strength = min(max(1 / num_inference_steps, strength), 1)
             if seed is not None:
@@ -132,7 +152,7 @@ class DiffusionProcessor:
                 kwargs["pooled_prompt_embeds"] = pooled_batch
             else:
                 kwargs["prompt"] = [prompt] * len(images)
-            return self.pipe(
+            result = self.pipe(
                 image=images,
                 generator=self.generator,
                 num_inference_steps=num_inference_steps,
@@ -141,13 +161,25 @@ class DiffusionProcessor:
                 output_type="np",
                 **kwargs
             ).images
+            self.logger.stopEvent("run_inference")
+            return result
 
     def __call__(self, img, prompt):
+        self.logger.startEvent("process_image")
         start_time = time.time()
         
+        # Resize image
+        self.logger.startEvent("resize_image")
         img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+        self.logger.stopEvent("resize_image")
 
+        # Convert to float
+        self.logger.startEvent("preprocess_image")
         img = np.float32(img) / 255
+        self.logger.stopEvent("preprocess_image")
+        
+        # Run inference
+        self.logger.startEvent("inference")
         filtered_img = self.run(
             images=[img],
             seed=0,
@@ -155,7 +187,12 @@ class DiffusionProcessor:
             num_inference_steps=2,
             strength=0.7
         )[0]
+        self.logger.stopEvent("inference")
+        
+        # Convert back to uint8
+        self.logger.startEvent("postprocess_image")
         filtered_img = np.uint8(filtered_img * 255)
+        self.logger.stopEvent("postprocess_image")
         
         end_time = time.time()
         duration = (end_time - start_time) * 1000  # Convert to milliseconds
@@ -170,4 +207,5 @@ class DiffusionProcessor:
             self.call_durations.clear()
             self.last_print_time = current_time
         
+        self.logger.stopEvent("process_image")
         return filtered_img
