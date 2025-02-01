@@ -18,6 +18,7 @@ try:
         # Perform image-to-image generation
         output_image = processor.run(
             images=[input_image] * batch_size,
+            seed=0,
             prompt="a beautiful landscape",
             num_inference_steps=2,
             strength=0.7

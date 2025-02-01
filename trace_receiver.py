@@ -5,6 +5,7 @@ import signal
 import os
 import atexit
 import sys
+import hashlib
 
 class TraceReceiver:
     def __init__(self):

@@ -14,8 +14,9 @@ from trace_logger import TraceLogger
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
-FPS = 24
-OUTPUT_QUEUE_SIZE = 2
+APP_FPS = 60
+CAMERA_FPS = 30
+OUTPUT_QUEUE_SIZE = 2 # should match the number of workers
 
 class WebcamApp:
     def __init__(self):
@@ -25,134 +26,108 @@ class WebcamApp:
         # Initialize ZMQ context
         self.context = zmq.Context()
         
-        # Initialize queues and threading events
-        self.processed_frames = Queue()
+        # Initialize threading events
         self.shutdown = threading.Event()
         
         # Initialize capture thread
         self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
-        self.collect_thread = threading.Thread(target=self.collect_loop, daemon=True)
         
         # Create fullscreen window directly
         self.window = pyglet.window.Window(fullscreen=True)
         self.window.event(self.on_draw)
+
+        # Initialize ZMQ socket for collection
+        self.collect_socket = self.context.socket(zmq.PULL)
+        ipc_path = os.path.join(os.getcwd(), ".collect_socket")
+        self.collect_socket.bind(f"ipc://{ipc_path}")
+        self.collect_socket.setsockopt(zmq.RCVTIMEO, 1000)
+        self.collect_socket.setsockopt(zmq.LINGER, 0)
         
-        # Current frame to display
-        self.current_frame = None
-        
-        # Schedule frame updates
-        pyglet.clock.schedule_interval(self.update, 1.0/FPS)
+        self.recent_timestamp = 0
+
+        # Warm up Pyglet's image handling
+        self.logger.startEvent("pyglet_warmup")
+        dummy_data = np.zeros((TARGET_SIZE, TARGET_SIZE, 3), dtype=np.uint8)
+        pyglet.image.ImageData(
+            TARGET_SIZE, TARGET_SIZE, 'RGB',
+            dummy_data.tobytes(),
+            pitch=TARGET_SIZE * 3
+        )
+        self.logger.stopEvent("pyglet_warmup")
 
     def capture_loop(self):
         # Initialize webcam
         cap = cv2.VideoCapture(10)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
-        cap.set(cv2.CAP_PROP_FPS, FPS)
+        cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
         
         # Initialize ZMQ socket for distribution
         socket = self.context.socket(zmq.PUSH)
-        socket.set_hwm(2)
+        socket.set_hwm(1)
         ipc_path = os.path.join(os.getcwd(), ".distribute_socket")
         socket.bind(f"ipc://{ipc_path}")
         socket.setsockopt(zmq.LINGER, 0)
         
         try:
+            frame_count = 0
             while not self.shutdown.is_set():
+                
+                # Start a new flow for this frame
                 self.logger.startEvent("capture_frame")
                 ret, frame = cap.read()
+                timestamp = str(time.time())
+                self.logger.stopEvent("capture_frame")
                 if not ret:
-                    self.logger.stopEvent("capture_frame")
                     continue
                 
-                # Get center crop
+                frame_count += 1
+                if frame_count % 3 == 0:
+                    continue
+                
+                h, w = frame.shape[:2]
+                self.logger.startEvent("send_frame")
                 h, w = frame.shape[:2]
                 start_x = (w - TARGET_SIZE) // 2
                 start_y = (h - TARGET_SIZE) // 2
                 cropped = frame[start_y:start_y+TARGET_SIZE, start_x:start_x+TARGET_SIZE]
-                
-                # Encode image
-                _, img_encoded = cv2.imencode('.jpg', cropped)
-                img_bytes = img_encoded.tobytes()
-                
-                # Send frame with timestamp
-                timestamp = time.time()
+                cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
                 try:
                     socket.send_multipart([
-                        str(timestamp).encode(),
-                        img_bytes,
-                        "a psychedelic landscape".encode()  # Default prompt
+                        timestamp.encode(),
+                        cropped.tobytes(),
+                        "a psychedelic landscape".encode()
                     ], flags=zmq.DONTWAIT)
                 except zmq.Again:
+                    self.logger.instantEvent("frame_dropped_hwm_reached")
                     pass  # Drop frame if HWM reached
-                self.logger.stopEvent("capture_frame")
+                self.logger.stopEvent("send_frame")
                 
         finally:
             cap.release()
             socket.close()
 
-    def collect_loop(self):
-        # Initialize ZMQ socket for collection
-        socket = self.context.socket(zmq.PULL)
-        ipc_path = os.path.join(os.getcwd(), ".collect_socket")
-        socket.bind(f"ipc://{ipc_path}")
-        socket.setsockopt(zmq.RCVTIMEO, 1000)
-        socket.setsockopt(zmq.LINGER, 0)
-        
-        recent_timestamp = 0
-        frame_queue = []  # Priority queue using heapq
-        
-        while not self.shutdown.is_set():
-            try:
-                self.logger.startEvent("collect_frame")
-                timestamp_bytes, frame = socket.recv_multipart()
-                timestamp = float(timestamp_bytes)
-                
-                # Drop frames older than our most recent processed frame
-                if timestamp <= recent_timestamp:
-                    print(f"dropping out-of-order frame: {1000*(recent_timestamp - timestamp):.1f}ms late")
-                    self.logger.stopEvent("collect_frame")
-                    continue
-                
-                # Add frame to priority queue
-                heapq.heappush(frame_queue, (timestamp, frame))
-                
-                # If we have more than OUTPUT_QUEUE_SIZE frames, process the oldest one
-                if len(frame_queue) > OUTPUT_QUEUE_SIZE:
-                    oldest_timestamp, oldest_frame = heapq.heappop(frame_queue)
-                    # Convert frame bytes to image
-                    img_array = np.frombuffer(oldest_frame, np.uint8)
-                    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                    # Convert BGR to RGB for Pyglet
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    # Create Pyglet image
-                    height, width = img.shape[:2]
-                    pyglet_image = pyglet.image.ImageData(
-                        width, height, 'RGB', img.tobytes(), pitch=width * 3
-                    )
-                    self.processed_frames.put(pyglet_image)
-                    recent_timestamp = oldest_timestamp
-                self.logger.stopEvent("collect_frame")
-                    
-            except zmq.Again:
-                continue
-        
-        socket.close()
-
-    def update(self, dt):
-        self.logger.startEvent("update_frame")
-        try:
-            # Get latest processed frame
-            frame = self.processed_frames.get_nowait()
-            self.current_frame = frame
-        except Empty:
-            pass
-        self.logger.stopEvent("update_frame")
-
     def on_draw(self):
-        self.logger.startEvent("draw_frame")
-        self.window.clear()
-        if self.current_frame:
+        # self.window.clear()
+        
+        # Try to get the latest frame
+        try:
+            timestamp_bytes, frame_data = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
+            
+            self.logger.startEvent("update_frame")
+            timestamp = timestamp_bytes.decode()
+            
+            # Drop frames older than our most recent processed frame
+            if float(timestamp) <= self.recent_timestamp:
+                self.logger.instantEvent("frame_dropped_out_of_order")
+                print(f"dropping out-of-order frame: {1000*(self.recent_timestamp - float(timestamp)):.1f}ms late")
+                self.logger.stopEvent("update_frame")
+                return
+            
+            self.recent_timestamp = float(timestamp)
+            
+            img = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
+            
             # Calculate scaling and position to center the image
             window_width = self.window.width
             window_height = self.window.height
@@ -168,11 +143,19 @@ class WebcamApp:
             y = TARGET_SIZE
             
             # Get a flipped version of the image
-            flipped_frame = self.current_frame.get_texture().get_transform(flip_y=True)
-            
+            pyglet_image = pyglet.image.ImageData(
+                TARGET_SIZE, TARGET_SIZE, 'RGB', img.tobytes(), pitch=TARGET_SIZE * 3
+            )
+            flipped_frame = pyglet_image.get_texture().get_transform(flip_y=True)
+            self.logger.stopEvent("update_frame")
+        
             # Draw the scaled, centered, and flipped image
+            self.logger.startEvent("blit_frame")
             flipped_frame.blit(x, y, width=TARGET_SIZE * scale, height=scaled_height)
-        self.logger.stopEvent("draw_frame")
+            self.logger.stopEvent("blit_frame")
+            
+        except zmq.Again:
+            pass
 
     def on_key_press(self, symbol, modifiers):
         if symbol == pyglet.window.key.ESCAPE:
@@ -180,9 +163,8 @@ class WebcamApp:
             pyglet.app.exit()
 
     def run(self):
-        # Start threads
+        # Start capture thread
         self.capture_thread.start()
-        self.collect_thread.start()
         
         # Run Pyglet event loop
         pyglet.app.run()
@@ -190,8 +172,8 @@ class WebcamApp:
         # Cleanup on exit
         self.shutdown.set()
         self.capture_thread.join()
-        self.collect_thread.join()
         self.context.destroy()
+        self.collect_socket.close()
 
 if __name__ == '__main__':
     app = WebcamApp()
