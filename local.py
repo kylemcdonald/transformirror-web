@@ -29,6 +29,15 @@ class WebcamApp:
         # Initialize threading events
         self.shutdown = threading.Event()
         
+        # Initialize frame buffer for batching
+        self.frame_buffer = []
+        
+        # Initialize frame queue for display
+        self.frame_queue = Queue(maxsize=10)
+        
+        # Add frame counter for pacing
+        self.render_frame_counter = 0
+        
         # Initialize capture thread
         self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
         
@@ -70,7 +79,6 @@ class WebcamApp:
         socket.setsockopt(zmq.LINGER, 0)
         
         try:
-            frame_count = 0
             while not self.shutdown.is_set():
                 
                 # Start a new flow for this frame
@@ -81,81 +89,129 @@ class WebcamApp:
                 if not ret:
                     continue
                 
-                frame_count += 1
-                if frame_count % 3 == 0:
-                    continue
-                
-                h, w = frame.shape[:2]
-                self.logger.startEvent("send_frame")
                 h, w = frame.shape[:2]
                 start_x = (w - TARGET_SIZE) // 2
                 start_y = (h - TARGET_SIZE) // 2
                 cropped = frame[start_y:start_y+TARGET_SIZE, start_x:start_x+TARGET_SIZE]
                 cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
-                try:
-                    socket.send_multipart([
-                        timestamp.encode(),
-                        cropped.tobytes(),
-                        "a psychedelic landscape".encode()
-                    ], flags=zmq.DONTWAIT)
-                except zmq.Again:
-                    self.logger.instantEvent("frame_dropped_hwm_reached")
-                    pass  # Drop frame if HWM reached
-                self.logger.stopEvent("send_frame")
+                
+                # Add frame to buffer
+                self.frame_buffer.append((timestamp, cropped))
+                
+                # If we have 2 frames, send them as a batch
+                if len(self.frame_buffer) == 2:
+                    self.logger.startEvent("send_frame_batch")
+                    try:
+                        # Prepare batch data
+                        timestamps = [f[0] for f in self.frame_buffer]
+                        frames = [f[1].tobytes() for f in self.frame_buffer]
+                        
+                        socket.send_multipart([
+                            *[t.encode() for t in timestamps],
+                            *frames,
+                            "a psychedelic landscape".encode()
+                        ], flags=zmq.DONTWAIT)
+                        
+                    except zmq.Again:
+                        self.logger.instantEvent("frame_batch_dropped_hwm_reached")
+                        pass  # Drop batch if HWM reached
+                    
+                    self.logger.stopEvent("send_frame_batch")
+                    self.frame_buffer.clear()
                 
         finally:
             cap.release()
             socket.close()
 
     def on_draw(self):
-        # self.window.clear()
-        
-        # Try to get the latest frame
+        # Try to get the latest frame batch
         try:
-            timestamp_bytes, frame_data = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
+            # Receive batch of 2 frames
+            multipart_msg = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
             
-            self.logger.startEvent("update_frame")
-            timestamp = timestamp_bytes.decode()
+            # First two elements are timestamps, next two are frame data
+            timestamp_bytes1, timestamp_bytes2, frame_data1, frame_data2 = multipart_msg
             
-            # Drop frames older than our most recent processed frame
-            if float(timestamp) <= self.recent_timestamp:
-                self.logger.instantEvent("frame_dropped_out_of_order")
-                print(f"dropping out-of-order frame: {1000*(self.recent_timestamp - float(timestamp)):.1f}ms late")
-                self.logger.stopEvent("update_frame")
-                return
+            self.logger.startEvent("process_frames")
+            timestamp1 = float(timestamp_bytes1.decode())
+            timestamp2 = float(timestamp_bytes2.decode())
             
-            self.recent_timestamp = float(timestamp)
+            # Process both frames and add them to queue in order
+            frames = [
+                (timestamp1, frame_data1),
+                (timestamp2, frame_data2)
+            ]
+            # Sort by timestamp
+            frames.sort(key=lambda x: x[0])
             
-            img = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
+            for timestamp, frame_data in frames:
+                # Drop frames older than our most recent processed frame
+                if timestamp <= self.recent_timestamp:
+                    self.logger.instantEvent("frame_dropped_out_of_order")
+                    print(f"dropping out-of-order frame: {1000*(self.recent_timestamp - timestamp):.1f}ms late")
+                    continue
+                
+                self.recent_timestamp = timestamp
+                
+                # Try to add to queue, skip if full
+                try:
+                    self.frame_queue.put_nowait((timestamp, frame_data))
+                except Queue.Full:
+                    self.logger.instantEvent("frame_dropped_queue_full")
+                    pass
             
-            # Calculate scaling and position to center the image
-            window_width = self.window.width
-            window_height = self.window.height
-            
-            # Calculate scale factor to fit the window while maintaining aspect ratio
-            scale_x = window_width / TARGET_SIZE
-            scale_y = window_height / TARGET_SIZE
-            scale = min(scale_x, scale_y)
-            
-            # Calculate centered position
-            x = (window_width - TARGET_SIZE * scale) / 2
-            scaled_height = TARGET_SIZE * scale
-            y = TARGET_SIZE
-            
-            # Get a flipped version of the image
-            pyglet_image = pyglet.image.ImageData(
-                TARGET_SIZE, TARGET_SIZE, 'RGB', img.tobytes(), pitch=TARGET_SIZE * 3
-            )
-            flipped_frame = pyglet_image.get_texture().get_transform(flip_y=True)
-            self.logger.stopEvent("update_frame")
-        
-            # Draw the scaled, centered, and flipped image
-            self.logger.startEvent("blit_frame")
-            flipped_frame.blit(x, y, width=TARGET_SIZE * scale, height=scaled_height)
-            self.logger.stopEvent("blit_frame")
+            self.logger.stopEvent("process_frames")
             
         except zmq.Again:
             pass
+        
+        # Check if we should process a frame based on queue size and counter
+        should_process = False
+        queue_size = self.frame_queue.qsize()
+        
+        if queue_size > 4:  # More than 2 batches (4 frames) in queue
+            should_process = True
+        else:
+            # Increment and wrap counter
+            self.render_frame_counter = (self.render_frame_counter + 1) % 2
+            should_process = self.render_frame_counter == 0
+        
+        # Try to draw the oldest frame from the queue if we should process
+        if should_process:
+            try:
+                timestamp, frame_data = self.frame_queue.get_nowait()
+                
+                self.logger.startEvent("update_frame")
+                img = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
+                
+                # Calculate scaling and position to center the image
+                window_width = self.window.width
+                window_height = self.window.height
+                
+                # Calculate scale factor to fit the window while maintaining aspect ratio
+                scale_x = window_width / TARGET_SIZE
+                scale_y = window_height / TARGET_SIZE
+                scale = min(scale_x, scale_y)
+                
+                # Calculate centered position
+                x = (window_width - TARGET_SIZE * scale) / 2
+                scaled_height = TARGET_SIZE * scale
+                y = TARGET_SIZE
+                
+                # Get a flipped version of the image
+                pyglet_image = pyglet.image.ImageData(
+                    TARGET_SIZE, TARGET_SIZE, 'RGB', img.tobytes(), pitch=TARGET_SIZE * 3
+                )
+                flipped_frame = pyglet_image.get_texture().get_transform(flip_y=True)
+                self.logger.stopEvent("update_frame")
+            
+                # Draw the scaled, centered, and flipped image
+                self.logger.startEvent("blit_frame")
+                flipped_frame.blit(x, y, width=TARGET_SIZE * scale, height=scaled_height)
+                self.logger.stopEvent("blit_frame")
+            
+            except Empty:
+                pass  # No frames to draw
 
     def on_key_press(self, symbol, modifiers):
         if symbol == pyglet.window.key.ESCAPE:

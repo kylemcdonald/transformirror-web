@@ -33,25 +33,38 @@ class Worker:
     
     def process_frame(self):
         try:
-            # Receive and validate frame
-            timestamp_bytes, frame_data, prompt = self.pull_socket.recv_multipart()
-            timestamp = timestamp_bytes.decode()
+            # Receive and validate frame batch
+            multipart_msg = self.pull_socket.recv_multipart()
             
-            if not self.check_frame_delay(timestamp):
+            # First two elements are timestamps, next two are frames, last is prompt
+            timestamp_bytes1, timestamp_bytes2, frame_data1, frame_data2, prompt = multipart_msg
+            timestamp1 = timestamp_bytes1.decode()
+            timestamp2 = timestamp_bytes2.decode()
+            
+            # Check both frames for delay
+            if not (self.check_frame_delay(timestamp1) and self.check_frame_delay(timestamp2)):
                 return
             
-            # Process frame through pipeline
+            # Process frames through pipeline
             with self.logger.event_scope("preprocess_frame"):
-                img = self.preprocess_image(frame_data)
+                img1 = self.preprocess_image(frame_data1)
+                img2 = self.preprocess_image(frame_data2)
+                batch = [img1, img2]
             
             with self.logger.event_scope("inference"):
-                processed_img = self.processor(img, prompt)
+                processed_batch = self.processor(batch, prompt)
             
             with self.logger.event_scope("postprocess_image"):
-                processed_img = np.uint8(processed_img * 255)
+                processed_batch = [np.uint8(img * 255) for img in processed_batch]
             
             with self.logger.event_scope("send_processed_frame"):
-                self.push_socket.send_multipart([timestamp.encode(), processed_img.tobytes()])
+                # Send both processed frames back with their original timestamps
+                self.push_socket.send_multipart([
+                    timestamp_bytes1,
+                    timestamp_bytes2,
+                    processed_batch[0].tobytes(),
+                    processed_batch[1].tobytes()
+                ])
             
         except zmq.Again:
             return
