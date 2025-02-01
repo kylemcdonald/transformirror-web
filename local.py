@@ -78,15 +78,20 @@ class WebcamApp:
         socket.bind(f"ipc://{ipc_path}")
         socket.setsockopt(zmq.LINGER, 0)
         
+        frame_count = 0
         try:
             while not self.shutdown.is_set():
                 
-                # Start a new flow for this frame
                 self.logger.startEvent("capture_frame")
                 ret, frame = cap.read()
                 timestamp = str(time.time())
                 self.logger.stopEvent("capture_frame")
                 if not ret:
+                    continue
+                
+                # reduce the framerate just slightly
+                frame_count += 1
+                if frame_count % 6 == 0:
                     continue
                 
                 h, w = frame.shape[:2]
@@ -96,6 +101,7 @@ class WebcamApp:
                 cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
                 
                 # Add frame to buffer
+                cropped = np.float32(cropped) / 255
                 self.frame_buffer.append((timestamp, cropped))
                 
                 # If we have 2 frames, send them as a batch

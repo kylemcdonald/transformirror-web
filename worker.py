@@ -81,8 +81,8 @@ class Worker:
         return True
     
     def preprocess_image(self, frame_data):
-        img = np.frombuffer(frame_data, dtype=np.uint8).reshape(1024, 1024, 3)
-        return np.float32(img) / 255
+        img = np.frombuffer(frame_data, dtype=np.float32).reshape(1024, 1024, 3)
+        return img
     
     def run(self):
         try:
