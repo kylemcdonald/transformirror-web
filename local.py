@@ -215,9 +215,12 @@ class WebcamApp:
         last_debug = time.time()
         frames_received = 0
         
+        # Set receive timeout to 1ms (1000 microseconds)
+        self.collect_socket.setsockopt(zmq.RCVTIMEO, 1)
+        
         while not self.shutdown.is_set():
             try:
-                multipart_msg = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
+                multipart_msg = self.collect_socket.recv_multipart()  # Remove NOBLOCK flag
                 frames_received += 1
                 
                 if len(multipart_msg) != 2:
@@ -246,27 +249,11 @@ class WebcamApp:
                     pass
                     
             except zmq.Again:
-                time.sleep(0.001)  # Small sleep to prevent busy waiting
+                continue  # Remove sleep() call since timeout handles the polling
             except Exception:
-                time.sleep(0.001)  # Sleep on error to prevent tight loop
+                continue  # Remove sleep() call
 
-    def update_frame(self, dt):
-        try:
-            # Always try to update raw frame texture
-            frame = self.frame_queue.get_nowait()
-            image = pyglet.image.ImageData(
-                TARGET_SIZE, TARGET_SIZE,
-                'RGB', frame.tobytes(),
-                pitch=TARGET_SIZE * 3
-            )
-            if self.current_texture is not None:
-                self.current_texture.delete()
-            self.current_texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
-        except Empty:
-            pass
-        except Exception:
-            pass
-            
+    def update_frame(self, dt):            
         # Update processed texture only if we're showing it
         if self.show_processed:
             try:
@@ -279,6 +266,22 @@ class WebcamApp:
                 if self.processed_texture is not None:
                     self.processed_texture.delete()
                 self.processed_texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
+            except Empty:
+                pass
+            except Exception:
+                pass
+            
+        else:
+            try:
+                frame = self.frame_queue.get_nowait()
+                image = pyglet.image.ImageData(
+                    TARGET_SIZE, TARGET_SIZE,
+                    'RGB', frame.tobytes(),
+                    pitch=TARGET_SIZE * 3
+                )
+                if self.current_texture is not None:
+                    self.current_texture.delete()
+                self.current_texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
             except Empty:
                 pass
             except Exception:
