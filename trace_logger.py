@@ -92,7 +92,8 @@ class TraceLogger:
             
     def instantEvent(self, event_name, args=None):
         """Log an instant event with optional arguments."""
-        print(event_name)
+        if not self.enabled:
+            print(event_name)
         
         if not self.enabled:
             return

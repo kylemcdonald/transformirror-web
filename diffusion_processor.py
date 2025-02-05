@@ -153,9 +153,9 @@ class DiffusionProcessor:
     def __call__(self, imgs, prompt):
         start_time = time.time()
         
-        # Run inference on batch
-        filtered_imgs = self.run(
-            images=imgs,
+        # Run inference on single image
+        filtered_img = self.run(
+            images=imgs,  # imgs is a list with one image
             seed=0,
             prompt=prompt.decode("utf-8"),
             num_inference_steps=2,
@@ -175,4 +175,4 @@ class DiffusionProcessor:
             self.call_durations.clear()
             self.last_print_time = current_time
         
-        return filtered_imgs
+        return filtered_img  # Return the processed image array directly

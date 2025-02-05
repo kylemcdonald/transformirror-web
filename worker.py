@@ -12,7 +12,7 @@ maximum_delay = 1
 class Worker:
     def __init__(self, gpu_id: int = 0):
         self.process_name = f"worker_gpu{gpu_id}"
-        self.logger = TraceLogger("worker", self.process_name, enabled=False)
+        self.logger = TraceLogger("worker", self.process_name)
         self.running = True
         self.processor = Processor()
         
@@ -33,37 +33,32 @@ class Worker:
     
     def process_frame(self):
         try:
-            # Receive and validate frame batch
+            # Receive and validate single frame
             multipart_msg = self.pull_socket.recv_multipart()
             
-            # First two elements are timestamps, next two are frames, last is prompt
-            timestamp_bytes1, timestamp_bytes2, frame_data1, frame_data2, prompt = multipart_msg
-            timestamp1 = timestamp_bytes1.decode()
-            timestamp2 = timestamp_bytes2.decode()
+            # First element is timestamp, second is frame, third is prompt
+            timestamp_bytes, frame_data, prompt = multipart_msg
+            timestamp = timestamp_bytes.decode()
             
-            # Check both frames for delay
-            if not (self.check_frame_delay(timestamp1) and self.check_frame_delay(timestamp2)):
+            # Check frame for delay
+            if not self.check_frame_delay(timestamp):
                 return
             
-            # Process frames through pipeline
+            # Process frame through pipeline
             with self.logger.event_scope("preprocess_frame"):
-                img1 = self.preprocess_image(frame_data1)
-                img2 = self.preprocess_image(frame_data2)
-                batch = [img1, img2]
+                img = self.preprocess_image(frame_data)
             
             with self.logger.event_scope("inference"):
-                processed_batch = self.processor(batch, prompt)
+                processed_frame = self.processor([img], prompt)
             
             with self.logger.event_scope("postprocess_image"):
-                processed_batch = [np.uint8(img * 255) for img in processed_batch]
+                processed_frame = np.uint8(processed_frame[0] * 255)
             
             with self.logger.event_scope("send_processed_frame"):
-                # Send both processed frames back with their original timestamps
+                # Send processed frame back with original timestamp
                 self.push_socket.send_multipart([
-                    timestamp_bytes1,
-                    timestamp_bytes2,
-                    processed_batch[0].tobytes(),
-                    processed_batch[1].tobytes()
+                    timestamp_bytes,
+                    processed_frame.tobytes()
                 ])
             
         except zmq.Again:

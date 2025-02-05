@@ -15,23 +15,20 @@ CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
 APP_FPS = 60
-CAMERA_FPS = 20
+CAMERA_FPS = 24
 OUTPUT_QUEUE_SIZE = 2 # should match the number of workers
 PROMPT_CYCLE_TIME = 10  # seconds between prompt changes
 
 class WebcamApp:
     def __init__(self):
         # Initialize logger
-        self.logger = TraceLogger("local", "webcam_display", enabled=False)
+        self.logger = TraceLogger("local", "webcam_display")
         
         # Initialize ZMQ context
         self.context = zmq.Context()
         
         # Initialize threading events
         self.shutdown = threading.Event()
-        
-        # Initialize frame buffer for batching
-        self.frame_buffer = []
         
         # Initialize frame queue for display
         self.frame_queue = Queue(maxsize=10)
@@ -126,74 +123,56 @@ class WebcamApp:
                 cropped = frame[start_y:start_y+TARGET_SIZE, start_x:start_x+TARGET_SIZE]
                 cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
                 
-                # Add frame to buffer
+                # Convert frame to float32
                 cropped = np.float32(cropped) / 255
-                self.frame_buffer.append((timestamp, cropped))
                 
-                # If we have 2 frames, send them as a batch
-                if len(self.frame_buffer) == 2:
-                    self.logger.startEvent("send_frame_batch")
-                    try:
-                        # Prepare batch data
-                        timestamps = [f[0] for f in self.frame_buffer]
-                        frames = [f[1].tobytes() for f in self.frame_buffer]
-                        
-                        # Get current prompt
-                        current_prompt = self.get_current_prompt()
-                        
-                        socket.send_multipart([
-                            *[t.encode() for t in timestamps],
-                            *frames,
-                            current_prompt.encode()
-                        ], flags=zmq.DONTWAIT)
-                        
-                    except zmq.Again:
-                        self.logger.instantEvent("frame_batch_dropped_hwm_reached")
-                        pass  # Drop batch if HWM reached
+                self.logger.startEvent("send_frame")
+                try:
+                    # Get current prompt
+                    current_prompt = self.get_current_prompt()
                     
-                    self.logger.stopEvent("send_frame_batch")
-                    self.frame_buffer.clear()
+                    socket.send_multipart([
+                        timestamp.encode(),
+                        cropped.tobytes(),
+                        current_prompt.encode()
+                    ], flags=zmq.DONTWAIT)
+                    
+                except zmq.Again:
+                    self.logger.instantEvent("frame_dropped_hwm_reached")
+                    pass  # Drop frame if HWM reached
+                
+                self.logger.stopEvent("send_frame")
                 
         finally:
             cap.release()
             socket.close()
 
     def on_draw(self):
-        # Try to get the latest frame batch
+        # Try to get the latest frame
         try:
-            # Receive batch of 2 frames
+            # Receive single frame
             multipart_msg = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
             
-            # First two elements are timestamps, next two are frame data
-            timestamp_bytes1, timestamp_bytes2, frame_data1, frame_data2 = multipart_msg
+            # First element is timestamp, second is frame data
+            timestamp_bytes, frame_data = multipart_msg
             
             self.logger.startEvent("process_frames")
-            timestamp1 = float(timestamp_bytes1.decode())
-            timestamp2 = float(timestamp_bytes2.decode())
+            timestamp = float(timestamp_bytes.decode())
             
-            # Process both frames and add them to queue in order
-            frames = [
-                (timestamp1, frame_data1),
-                (timestamp2, frame_data2)
-            ]
-            # Sort by timestamp
-            frames.sort(key=lambda x: x[0])
+            # Drop frames older than our most recent processed frame
+            if timestamp <= self.recent_timestamp:
+                self.logger.instantEvent("frame_dropped_out_of_order")
+                print(f"dropping out-of-order frame: {1000*(self.recent_timestamp - timestamp):.1f}ms late")
+                return
             
-            for timestamp, frame_data in frames:
-                # Drop frames older than our most recent processed frame
-                if timestamp <= self.recent_timestamp:
-                    self.logger.instantEvent("frame_dropped_out_of_order")
-                    print(f"dropping out-of-order frame: {1000*(self.recent_timestamp - timestamp):.1f}ms late")
-                    continue
-                
-                self.recent_timestamp = timestamp
-                
-                # Try to add to queue, skip if full
-                try:
-                    self.frame_queue.put_nowait((timestamp, frame_data))
-                except Queue.Full:
-                    self.logger.instantEvent("frame_dropped_queue_full")
-                    pass
+            self.recent_timestamp = timestamp
+            
+            # Try to add to queue, skip if full
+            try:
+                self.frame_queue.put_nowait((timestamp, frame_data))
+            except Queue.Full:
+                self.logger.instantEvent("frame_dropped_queue_full")
+                pass
             
             self.logger.stopEvent("process_frames")
             

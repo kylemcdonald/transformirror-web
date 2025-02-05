@@ -13,7 +13,7 @@ try:
     while True:
         start_time = time.time()
         
-        batch_size = 2
+        batch_size = 1
         
         # Perform image-to-image generation
         output_image = processor.run(
