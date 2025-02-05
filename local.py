@@ -6,6 +6,7 @@ import time
 import heapq
 import numpy as np
 import os
+import json
 from queue import Queue, Empty
 from typing import Optional
 from trace_logger import TraceLogger
@@ -14,14 +15,18 @@ from trace_logger import TraceLogger
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
-CAMERA_FPS = 20
 QUEUE_SIZE = 2
-PROMPT_CYCLE_TIME = 10  # seconds between prompt changes
 
 class WebcamApp:
     def __init__(self):
         # Initialize logger
         self.logger = TraceLogger("local", "webcam_display")
+        
+        # Initialize settings and tracking variables
+        self.settings_file = 'settings.json'
+        self.last_settings_check = 0
+        self.last_settings_mtime = 0
+        self.load_settings()
         
         # Initialize ZMQ context
         self.context = zmq.Context()
@@ -80,10 +85,55 @@ class WebcamApp:
 
     def get_current_prompt(self):
         current_time = time.time()
-        if current_time - self.last_prompt_change >= PROMPT_CYCLE_TIME:
+        if current_time - self.last_prompt_change >= self.prompt_cycle_time:
             self.current_prompt_idx = (self.current_prompt_idx + 1) % len(self.prompts)
             self.last_prompt_change = current_time
         return self.prompts[self.current_prompt_idx]
+
+    def load_settings(self):
+        """Load settings from file, with fallback to defaults if file not found."""
+        try:
+            mtime = os.path.getmtime(self.settings_file)
+            with open(self.settings_file, 'r') as f:
+                settings = json.load(f)
+                self.mask_settings = settings.get("mask", {
+                    "x": 941.0,
+                    "y": 215.0,
+                    "radius": 50
+                })
+                self.passthrough = settings.get("passthrough", False)
+                self.camera_fps = settings.get("camera_fps", 24)
+                self.prompt_cycle_time = settings.get("prompt_cycle_time", 10)
+            self.last_settings_mtime = mtime
+        except FileNotFoundError:
+            # Default settings if file not found
+            self.mask_settings = {
+                "x": 941.0,
+                "y": 215.0,
+                "radius": 50
+            }
+            self.passthrough = False
+            self.camera_fps = 24
+            self.prompt_cycle_time = 10
+            self.last_settings_mtime = 0
+
+    def check_settings(self):
+        """Check if settings file has been modified and reload if necessary."""
+        current_time = time.time()
+        # Only check once per second
+        if current_time - self.last_settings_check < 1.0:
+            return
+            
+        self.last_settings_check = current_time
+        
+        try:
+            mtime = os.path.getmtime(self.settings_file)
+            if mtime > self.last_settings_mtime:
+                self.load_settings()
+                print("Settings reloaded")
+        except FileNotFoundError:
+            # File was deleted, keep using current settings
+            pass
 
     def capture_loop(self):
         # Initialize webcam
@@ -91,7 +141,7 @@ class WebcamApp:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
-        cap.set(cv2.CAP_PROP_FPS, 24)
+        cap.set(cv2.CAP_PROP_FPS, self.camera_fps)
         
         # Initialize ZMQ socket for distribution
         socket = self.context.socket(zmq.PUSH)
@@ -113,8 +163,6 @@ class WebcamApp:
                 
                 # reduce the framerate by half
                 frame_count += 1
-                # if frame_count % 2 == 0:
-                #     continue
                 
                 h, w = frame.shape[:2]
                 start_x = (w - TARGET_SIZE) // 2
@@ -122,61 +170,72 @@ class WebcamApp:
                 cropped = frame[start_y:start_y+TARGET_SIZE, start_x:start_x+TARGET_SIZE]
                 cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
                 
-                # Convert frame to float32
-                cropped = np.float32(cropped) / 255
-                
-                self.logger.startEvent("send_frame")
-                try:
-                    # Get current prompt
-                    current_prompt = self.get_current_prompt()
+                if self.passthrough:
+                    # In passthrough mode, send directly to display queue
+                    try:
+                        self.frame_queue.put_nowait((timestamp, cropped.tobytes()))
+                    except Queue.Full:
+                        pass
+                else:
+                    # Convert frame to float32 for workers
+                    cropped = np.float32(cropped) / 255
                     
-                    socket.send_multipart([
-                        timestamp.encode(),
-                        cropped.tobytes(),
-                        current_prompt.encode()
-                    ], flags=zmq.DONTWAIT)
+                    self.logger.startEvent("send_frame")
+                    try:
+                        # Get current prompt
+                        current_prompt = self.get_current_prompt()
+                        
+                        socket.send_multipart([
+                            timestamp.encode(),
+                            cropped.tobytes(),
+                            current_prompt.encode()
+                        ], flags=zmq.DONTWAIT)
+                        
+                    except zmq.Again:
+                        self.logger.instantEvent("frame_dropped_hwm_reached")
+                        pass  # Drop frame if HWM reached
                     
-                except zmq.Again:
-                    self.logger.instantEvent("frame_dropped_hwm_reached")
-                    pass  # Drop frame if HWM reached
-                
-                self.logger.stopEvent("send_frame")
+                    self.logger.stopEvent("send_frame")
                 
         finally:
             cap.release()
             socket.close()
 
     def on_draw(self):
-        # Try to get the latest frame
-        try:
-            # Receive single frame
-            multipart_msg = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
-            
-            # First element is timestamp, second is frame data
-            timestamp_bytes, frame_data = multipart_msg
-            
-            self.logger.startEvent("process_frames")
-            timestamp = float(timestamp_bytes.decode())
-            
-            # Drop frames older than our most recent processed frame
-            if timestamp <= self.recent_timestamp:
-                self.logger.instantEvent("frame_dropped_out_of_order")
-                print(f"dropping out-of-order frame: {1000*(self.recent_timestamp - timestamp):.1f}ms late")
-                return
-            
-            self.recent_timestamp = timestamp
-            
-            # Try to add to queue, skip if full
+        # Check for settings updates
+        self.check_settings()
+        
+        if not self.passthrough:
+            # Try to get the latest frame from workers
             try:
-                self.frame_queue.put_nowait((timestamp, frame_data))
-            except Queue.Full:
-                self.logger.instantEvent("frame_dropped_queue_full")
+                # Receive single frame
+                multipart_msg = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
+                
+                # First element is timestamp, second is frame data
+                timestamp_bytes, frame_data = multipart_msg
+                
+                self.logger.startEvent("process_frames")
+                timestamp = float(timestamp_bytes.decode())
+                
+                # Drop frames older than our most recent processed frame
+                if timestamp <= self.recent_timestamp:
+                    self.logger.instantEvent("frame_dropped_out_of_order")
+                    print(f"dropping out-of-order frame: {1000*(self.recent_timestamp - timestamp):.1f}ms late")
+                    return
+                
+                self.recent_timestamp = timestamp
+                
+                # Try to add to queue, skip if full
+                try:
+                    self.frame_queue.put_nowait((timestamp, frame_data))
+                except Queue.Full:
+                    self.logger.instantEvent("frame_dropped_queue_full")
+                    pass
+                
+                self.logger.stopEvent("process_frames")
+                
+            except zmq.Again:
                 pass
-            
-            self.logger.stopEvent("process_frames")
-            
-        except zmq.Again:
-            pass
         
         # Check if we should process a frame based on queue size and counter
         should_process = False
@@ -186,7 +245,7 @@ class WebcamApp:
             should_process = True
         else:
             # Increment and wrap counter
-            self.render_frame_counter = (self.render_frame_counter + 1) % 2
+            self.render_frame_counter = (self.render_frame_counter + 1) % 3 # matches the 60fps vs 20fps
             should_process = self.render_frame_counter == 0
         
         # Try to draw the oldest frame from the queue if we should process
@@ -195,7 +254,11 @@ class WebcamApp:
                 timestamp, frame_data = self.frame_queue.get_nowait()
                 
                 self.logger.startEvent("update_frame")
-                img = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
+                if self.passthrough:
+                    img = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
+                else:
+                    # Worker frames come as float32
+                    img = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
                 
                 # Calculate scaling and position to center the image
                 window_width = self.window.width
@@ -215,6 +278,16 @@ class WebcamApp:
                 side = 1200
                 x = (window_width - side) / 2
                 flipped_frame.blit(x, 0, width=side, height=side)
+                
+                # Draw black circle at fixed position
+                circle = pyglet.shapes.Circle(
+                    x=self.mask_settings["x"],
+                    y=self.mask_settings["y"],
+                    radius=self.mask_settings["radius"],
+                    color=(0, 0, 0)
+                )
+                circle.draw()
+                
                 self.logger.stopEvent("blit_frame")
             
             except Empty:

@@ -1,0 +1,10 @@
+{
+    "mask": {
+        "x": 941,
+        "y": 215,
+        "radius": 15
+    },
+    "passthrough": false,
+    "camera_fps": 20,
+    "prompt_cycle_time": 15
+} 
