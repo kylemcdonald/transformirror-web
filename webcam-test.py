@@ -1,5 +1,6 @@
 import cv2
 import pyglet
+from pyglet.gl import *  # Add this import
 import numpy as np
 import argparse
 
@@ -9,6 +10,9 @@ CIRCLE_RADIUS = 50  # 20px diameter = 10px radius
 CIRCLE_X = 941.0  # Fixed X position
 CIRCLE_Y = 215.0  # Fixed Y position
 
+# Add OpenGL configuration for antialiasing
+config = pyglet.gl.Config(sample_buffers=1, samples=4)
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Webcam test with configurable camera ID')
     parser.add_argument('--camera-id', type=int, default=0,
@@ -17,7 +21,7 @@ def parse_args():
 
 class WebcamTest:
     def __init__(self, camera_id=0):
-        self.window = pyglet.window.Window(fullscreen=True)
+        self.window = pyglet.window.Window(fullscreen=True, config=config)
         self.window.event(self.on_draw)
         self.window.event(self.on_mouse_motion)
         

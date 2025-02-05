@@ -10,6 +10,8 @@ import json
 from queue import Queue, Empty
 from typing import Optional
 from trace_logger import TraceLogger
+import re
+from pyglet.gl import *
 
 # Constants
 CAPTURE_WIDTH = 1920
@@ -17,71 +19,97 @@ CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
 QUEUE_SIZE = 2
 
+# Add OpenGL configuration for antialiasing and alpha blending
+config = pyglet.gl.Config(
+    double_buffer=True,
+    sample_buffers=1,
+    samples=4,
+    alpha_size=8,
+    depth_size=24
+)
+
 class WebcamApp:
     def __init__(self):
         # Initialize logger
         self.logger = TraceLogger("local", "webcam_display")
         
-        # Initialize settings and tracking variables
-        self.settings_file = 'settings.json'
-        self.last_settings_check = 0
-        self.last_settings_mtime = 0
-        self.load_settings()
+        # Add debug counters and timing
+        self.frame_count = 0
+        self.last_fps_time = time.time()
+        self.processed_count = 0  # Track processed frames
         
-        # Initialize ZMQ context
-        self.context = zmq.Context()
+        # Initialize settings
+        self.settings_file = 'settings.json'
+        self.last_settings_mtime = 0
+        self.load_settings()  # This will override the default if settings exist
         
         # Initialize threading events
         self.shutdown = threading.Event()
         
-        # Initialize frame queue for display
-        self.frame_queue = Queue(maxsize=10)
+        # Initialize ZMQ context and sockets
+        self.context = zmq.Context()
         
-        # Add frame counter for pacing
-        self.render_frame_counter = 0
+        # Socket for sending frames to workers
+        self.distribute_socket = self.context.socket(zmq.PUSH)
+        self.distribute_socket.set_hwm(2)  # Increase slightly to prevent blocking
+        ipc_path = os.path.join(os.getcwd(), ".distribute_socket")
+        self.distribute_socket.bind(f"ipc://{ipc_path}")
+        self.distribute_socket.setsockopt(zmq.LINGER, 0)
         
-        # Initialize prompts
+        # Socket for receiving processed frames
+        self.collect_socket = self.context.socket(zmq.PULL)
+        ipc_path = os.path.join(os.getcwd(), ".collect_socket")
+        self.collect_socket.bind(f"ipc://{ipc_path}")
+        self.collect_socket.setsockopt(zmq.RCVTIMEO, 0)  # Non-blocking
+        self.collect_socket.setsockopt(zmq.LINGER, 0)
+        
+        # Frame queues - increase size slightly
+        self.frame_queue = Queue(maxsize=2)
+        self.processed_queue = Queue(maxsize=2)
+        
+        # Initialize threads
+        self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
+        self.process_thread = threading.Thread(target=self.process_loop, daemon=True)
+        
+        # Create window with OpenGL config
+        try:
+            self.window = pyglet.window.Window(fullscreen=True, config=config, vsync=True)
+        except pyglet.window.NoSuchConfigException:
+            self.window = pyglet.window.Window(fullscreen=True, vsync=True)
+        
+        # Register event handlers
+        self.window.event(self.on_draw)
+        self.window.event(self.on_key_press)  # Register key press handler
+        
+        # Create circle shape
+        self.batch = pyglet.graphics.Batch()
+        self.circle = pyglet.shapes.Circle(
+            x=self.mask_settings["x"],
+            y=self.mask_settings["y"],
+            radius=self.mask_settings["radius"],
+            color=(0, 0, 0),
+            batch=self.batch
+        )
+        
+        # Frame storage
+        self.current_texture = None
+        self.processed_texture = None
+        
+        # Load prompts
         self.prompts = self.load_prompts()
         self.current_prompt_idx = 0
         self.last_prompt_change = time.time()
         
-        # Initialize capture thread
-        self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
-        
-        # Create fullscreen window directly
-        self.window = pyglet.window.Window(fullscreen=True)
-        self.window.event(self.on_draw)
-
-        # Initialize ZMQ socket for collection
-        self.collect_socket = self.context.socket(zmq.PULL)
-        ipc_path = os.path.join(os.getcwd(), ".collect_socket")
-        self.collect_socket.bind(f"ipc://{ipc_path}")
-        self.collect_socket.setsockopt(zmq.RCVTIMEO, 1000)
-        self.collect_socket.setsockopt(zmq.LINGER, 0)
-        
-        self.recent_timestamp = 0
-
-        # Warm up Pyglet's image handling
-        self.logger.startEvent("pyglet_warmup")
-        dummy_data = np.zeros((TARGET_SIZE, TARGET_SIZE, 3), dtype=np.uint8)
-        pyglet.image.ImageData(
-            TARGET_SIZE, TARGET_SIZE, 'RGB',
-            dummy_data.tobytes(),
-            pitch=TARGET_SIZE * 3
-        )
-        self.logger.stopEvent("pyglet_warmup")
+        # Schedule updates
+        pyglet.clock.schedule_interval(self.update_frame, 1/60.0)
+        pyglet.clock.schedule_interval(self.check_settings, 1.0)
 
     def load_prompts(self):
         try:
             with open('prompts.txt', 'r') as f:
-                prompts = [line.strip() for line in f if line.strip()]
-            if not prompts:
-                # Fallback prompt if file is empty
-                return ["a psychedelic landscape"]
-            return prompts
+                return [line.strip() for line in f if line.strip()]
         except FileNotFoundError:
-            # Fallback prompt if file doesn't exist
-            return ["a psychedelic landscape"]
+            return ["A beautiful portrait"]
 
     def get_current_prompt(self):
         current_time = time.time()
@@ -91,225 +119,226 @@ class WebcamApp:
         return self.prompts[self.current_prompt_idx]
 
     def load_settings(self):
-        """Load settings from file, with fallback to defaults if file not found."""
-        try:
-            mtime = os.path.getmtime(self.settings_file)
-            with open(self.settings_file, 'r') as f:
-                settings = json.load(f)
-                self.mask_settings = settings.get("mask", {
-                    "x": 941.0,
-                    "y": 215.0,
-                    "radius": 50
-                })
-                self.passthrough = settings.get("passthrough", False)
-                self.camera_fps = settings.get("camera_fps", 24)
-                self.prompt_cycle_time = settings.get("prompt_cycle_time", 10)
-            self.last_settings_mtime = mtime
-        except FileNotFoundError:
-            # Default settings if file not found
-            self.mask_settings = {
+        with open(self.settings_file, 'r') as f:
+            settings = json.load(f)
+            self.mask_settings = settings.get("mask", {
                 "x": 941.0,
                 "y": 215.0,
                 "radius": 50
-            }
-            self.passthrough = False
-            self.camera_fps = 24
-            self.prompt_cycle_time = 10
-            self.last_settings_mtime = 0
+            })
+            self.camera_fps = settings.get("camera_fps", 20)
+            self.prompt_cycle_time = settings.get("prompt_cycle_time", 10)
+            self.settings_show_processed = settings.get("show_processed", False)
 
-    def check_settings(self):
-        """Check if settings file has been modified and reload if necessary."""
-        current_time = time.time()
-        # Only check once per second
-        if current_time - self.last_settings_check < 1.0:
-            return
-            
-        self.last_settings_check = current_time
-        
+    def check_settings(self, dt):
         try:
-            mtime = os.path.getmtime(self.settings_file)
-            if mtime > self.last_settings_mtime:
-                self.load_settings()
-                print("Settings reloaded")
-        except FileNotFoundError:
-            # File was deleted, keep using current settings
+            # Only reload settings if file has changed
+            try:
+                mtime = os.path.getmtime(self.settings_file)
+                if mtime <= self.last_settings_mtime:
+                    return
+                self.last_settings_mtime = mtime
+            except OSError:
+                return
+
+            self.load_settings()
+            # Update circle in main thread
+            self.circle.x = self.mask_settings["x"]
+            self.circle.y = self.mask_settings["y"]
+            self.circle.radius = self.mask_settings["radius"]
+        except Exception:
             pass
 
+    @property
+    def show_processed(self):
+        if hasattr(self, 'user_show_processed'):
+            return self.user_show_processed
+        return self.settings_show_processed
+
+    @show_processed.setter
+    def show_processed(self, value):
+        self.user_show_processed = value
+
     def capture_loop(self):
-        # Initialize webcam
         cap = cv2.VideoCapture(1)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
         cap.set(cv2.CAP_PROP_FPS, self.camera_fps)
         
-        # Initialize ZMQ socket for distribution
-        socket = self.context.socket(zmq.PUSH)
-        socket.set_hwm(1)
-        ipc_path = os.path.join(os.getcwd(), ".distribute_socket")
-        socket.bind(f"ipc://{ipc_path}")
-        socket.setsockopt(zmq.LINGER, 0)
+        last_send_time = 0
+        send_interval = 1.0 / 30  # Limit sending to workers to 30fps
         
-        frame_count = 0
         try:
             while not self.shutdown.is_set():
-                
-                self.logger.startEvent("capture_frame")
                 ret, frame = cap.read()
-                timestamp = str(time.time())
-                self.logger.stopEvent("capture_frame")
                 if not ret:
+                    time.sleep(0.01)
                     continue
-                
-                # reduce the framerate by half
-                frame_count += 1
-                
+
+                # Crop and convert frame
                 h, w = frame.shape[:2]
                 start_x = (w - TARGET_SIZE) // 2
                 start_y = (h - TARGET_SIZE) // 2
                 cropped = frame[start_y:start_y+TARGET_SIZE, start_x:start_x+TARGET_SIZE]
                 cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
                 
-                if self.passthrough:
-                    # In passthrough mode, send directly to display queue
+                # Put frame in display queue
+                try:
+                    if self.frame_queue.empty():  # Only update if empty
+                        self.frame_queue.put_nowait(cropped)
+                except:
+                    pass
+                
+                # Send frame to workers at reduced rate
+                current_time = time.time()
+                if current_time - last_send_time >= send_interval:
                     try:
-                        self.frame_queue.put_nowait((timestamp, cropped.tobytes()))
-                    except Queue.Full:
-                        pass
-                else:
-                    # Convert frame to float32 for workers
-                    cropped = np.float32(cropped) / 255
-                    
-                    self.logger.startEvent("send_frame")
-                    try:
-                        # Get current prompt
+                        timestamp = str(current_time)
                         current_prompt = self.get_current_prompt()
+                        frame_float = np.float32(cropped) / 255.0
                         
-                        socket.send_multipart([
+                        self.distribute_socket.send_multipart([
                             timestamp.encode(),
-                            cropped.tobytes(),
+                            frame_float.tobytes(),
                             current_prompt.encode()
                         ], flags=zmq.DONTWAIT)
-                        
+                        last_send_time = current_time
                     except zmq.Again:
-                        self.logger.instantEvent("frame_dropped_hwm_reached")
-                        pass  # Drop frame if HWM reached
-                    
-                    self.logger.stopEvent("send_frame")
+                        pass  # Skip if can't send
                 
         finally:
             cap.release()
-            socket.close()
 
-    def on_draw(self):
-        # Check for settings updates
-        self.check_settings()
+    def process_loop(self):
+        """Receive processed frames from workers"""
+        last_debug = time.time()
+        frames_received = 0
         
-        if not self.passthrough:
-            # Try to get the latest frame from workers
+        while not self.shutdown.is_set():
             try:
-                # Receive single frame
                 multipart_msg = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
+                frames_received += 1
                 
-                # First element is timestamp, second is frame data
+                if len(multipart_msg) != 2:
+                    continue
+                    
                 timestamp_bytes, frame_data = multipart_msg
                 
-                self.logger.startEvent("process_frames")
-                timestamp = float(timestamp_bytes.decode())
-                
-                # Drop frames older than our most recent processed frame
-                if timestamp <= self.recent_timestamp:
-                    self.logger.instantEvent("frame_dropped_out_of_order")
-                    print(f"dropping out-of-order frame: {1000*(self.recent_timestamp - timestamp):.1f}ms late")
-                    return
-                
-                self.recent_timestamp = timestamp
-                
-                # Try to add to queue, skip if full
                 try:
-                    self.frame_queue.put_nowait((timestamp, frame_data))
-                except Queue.Full:
-                    self.logger.instantEvent("frame_dropped_queue_full")
+                    # Convert back to numpy array
+                    processed_frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
+                    
+                    # Update processed queue
+                    try:
+                        # Clear old frames
+                        while not self.processed_queue.empty():
+                            try:
+                                self.processed_queue.get_nowait()
+                            except Empty:
+                                break
+                        
+                        self.processed_queue.put_nowait(processed_frame)
+                        self.processed_count += 1
+                    except Full:
+                        pass
+                except Exception:
                     pass
-                
-                self.logger.stopEvent("process_frames")
-                
+                    
             except zmq.Again:
-                pass
-        
-        # Check if we should process a frame based on queue size and counter
-        should_process = False
-        queue_size = self.frame_queue.qsize()
-        
-        if queue_size > QUEUE_SIZE:
-            should_process = True
-        else:
-            # Increment and wrap counter
-            self.render_frame_counter = (self.render_frame_counter + 1) % 3 # matches the 60fps vs 20fps
-            should_process = self.render_frame_counter == 0
-        
-        # Try to draw the oldest frame from the queue if we should process
-        if should_process:
-            try:
-                timestamp, frame_data = self.frame_queue.get_nowait()
-                
-                self.logger.startEvent("update_frame")
-                if self.passthrough:
-                    img = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
-                else:
-                    # Worker frames come as float32
-                    img = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
-                
-                # Calculate scaling and position to center the image
-                window_width = self.window.width
-                window_height = self.window.height
-                
-                # Get a flipped version of the image
-                pyglet_image = pyglet.image.ImageData(
-                    TARGET_SIZE, TARGET_SIZE, 'RGB', img.tobytes(), pitch=TARGET_SIZE * 3
-                )
-                flipped_frame = pyglet_image.get_texture().get_transform(flip_y=True, flip_x=True)
-                flipped_frame.anchor_x = 0
-                flipped_frame.anchor_y = 0
-                self.logger.stopEvent("update_frame")
+                time.sleep(0.001)  # Small sleep to prevent busy waiting
+            except Exception:
+                time.sleep(0.001)  # Sleep on error to prevent tight loop
+
+    def update_frame(self, dt):
+        try:
+            # Always try to update raw frame texture
+            frame = self.frame_queue.get_nowait()
+            image = pyglet.image.ImageData(
+                TARGET_SIZE, TARGET_SIZE,
+                'RGB', frame.tobytes(),
+                pitch=TARGET_SIZE * 3
+            )
+            if self.current_texture is not None:
+                self.current_texture.delete()
+            self.current_texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
+        except Empty:
+            pass
+        except Exception:
+            pass
             
-                # Draw the scaled, centered, and flipped image
-                self.logger.startEvent("blit_frame")
+        # Update processed texture only if we're showing it
+        if self.show_processed:
+            try:
+                processed = self.processed_queue.get_nowait()
+                image = pyglet.image.ImageData(
+                    TARGET_SIZE, TARGET_SIZE,
+                    'RGB', processed.tobytes(),
+                    pitch=TARGET_SIZE * 3
+                )
+                if self.processed_texture is not None:
+                    self.processed_texture.delete()
+                self.processed_texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
+            except Empty:
+                pass
+            except Exception:
+                pass
+
+    def on_draw(self):
+        self.frame_count += 1
+        current_time = time.time()
+        
+        if current_time - self.last_fps_time >= 1.0:
+            fps = self.frame_count / (current_time - self.last_fps_time)
+            print(f"FPS: {fps:.2f}")
+            self.frame_count = 0
+            self.processed_count = 0
+            self.last_fps_time = current_time
+        
+        try:
+            self.window.clear()
+            
+            # Choose which texture to display
+            texture = None
+            if self.show_processed:
+                if self.processed_texture is not None:
+                    texture = self.processed_texture
+                else:
+                    texture = self.current_texture
+            else:
+                texture = self.current_texture
+            
+            if texture is not None:
+                texture.anchor_x = 0
+                texture.anchor_y = 0
+                window_width = self.window.width
                 side = 1200
                 x = (window_width - side) / 2
-                flipped_frame.blit(x, 0, width=side, height=side)
-                
-                # Draw black circle at fixed position
-                circle = pyglet.shapes.Circle(
-                    x=self.mask_settings["x"],
-                    y=self.mask_settings["y"],
-                    radius=self.mask_settings["radius"],
-                    color=(0, 0, 0)
-                )
-                circle.draw()
-                
-                self.logger.stopEvent("blit_frame")
+                texture.blit(x, 0, width=side, height=side)
             
-            except Empty:
-                pass  # No frames to draw
+            self.batch.draw()
+        except Exception:
+            pass
 
     def on_key_press(self, symbol, modifiers):
         if symbol == pyglet.window.key.ESCAPE:
             self.shutdown.set()
             pyglet.app.exit()
+        elif symbol == pyglet.window.key.SPACE:
+            self.show_processed = not self.show_processed
 
     def run(self):
-        # Start capture thread
         self.capture_thread.start()
-        
-        # Run Pyglet event loop
-        pyglet.app.run()
-        
-        # Cleanup on exit
-        self.shutdown.set()
-        self.capture_thread.join()
-        self.context.destroy()
-        self.collect_socket.close()
+        self.process_thread.start()
+        try:
+            pyglet.app.run()
+        finally:
+            self.shutdown.set()
+            self.capture_thread.join()
+            self.process_thread.join()
+            self.context.destroy()
+            self.collect_socket.close()
+            self.distribute_socket.close()
 
 if __name__ == '__main__':
     app = WebcamApp()

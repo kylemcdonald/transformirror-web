@@ -4,7 +4,7 @@
         "y": 215,
         "radius": 15
     },
-    "passthrough": false,
+    "show_processed": true,
     "camera_fps": 20,
     "prompt_cycle_time": 15
 } 

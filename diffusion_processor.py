@@ -39,7 +39,7 @@ def build_pipe(local_files_only):
     return pipe
 
 class DiffusionProcessor:
-    def __init__(self, warmup="2x1024x1024x3", local_files_only=True, gpu_id=0, use_compel=True):
+    def __init__(self, warmup="1x1024x1024x3", local_files_only=True, gpu_id=0, use_compel=True):
         process_name = f"worker_gpu{gpu_id}"
         warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
 
@@ -85,7 +85,7 @@ class DiffusionProcessor:
                     print(f"{self.device}: warmup {warmup} {i+1}/3")
                     start_time = time.time()
                     self.run(
-                        images=[images[0], images[1]],  # Use first two images from batch
+                        images=[images[0]],
                         prompt="warmup",
                         num_inference_steps=2,
                         strength=1.0
