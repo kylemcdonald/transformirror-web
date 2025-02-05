@@ -7,7 +7,7 @@ import multiprocessing
 from contextlib import contextmanager
 
 class TraceLogger:
-    def __init__(self, script_name, process_name=None, enabled=True):
+    def __init__(self, script_name, process_name=None, enabled=False):
         self.script_name = script_name
         self.process_name = process_name or script_name  # Default to script_name if not provided
         self.pid = os.getpid()

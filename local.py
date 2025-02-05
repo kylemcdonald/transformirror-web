@@ -14,9 +14,8 @@ from trace_logger import TraceLogger
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
-APP_FPS = 60
-CAMERA_FPS = 24
-OUTPUT_QUEUE_SIZE = 2 # should match the number of workers
+CAMERA_FPS = 20
+QUEUE_SIZE = 2
 PROMPT_CYCLE_TIME = 10  # seconds between prompt changes
 
 class WebcamApp:
@@ -183,7 +182,7 @@ class WebcamApp:
         should_process = False
         queue_size = self.frame_queue.qsize()
         
-        if queue_size > 4:  # More than 2 batches (4 frames) in queue
+        if queue_size > QUEUE_SIZE:
             should_process = True
         else:
             # Increment and wrap counter
