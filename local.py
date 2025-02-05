@@ -15,13 +15,14 @@ CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
 APP_FPS = 60
-CAMERA_FPS = 30
+CAMERA_FPS = 20
 OUTPUT_QUEUE_SIZE = 2 # should match the number of workers
+PROMPT_CYCLE_TIME = 10  # seconds between prompt changes
 
 class WebcamApp:
     def __init__(self):
         # Initialize logger
-        self.logger = TraceLogger("local", "webcam_display")
+        self.logger = TraceLogger("local", "webcam_display", enabled=False)
         
         # Initialize ZMQ context
         self.context = zmq.Context()
@@ -37,6 +38,11 @@ class WebcamApp:
         
         # Add frame counter for pacing
         self.render_frame_counter = 0
+        
+        # Initialize prompts
+        self.prompts = self.load_prompts()
+        self.current_prompt_idx = 0
+        self.last_prompt_change = time.time()
         
         # Initialize capture thread
         self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
@@ -64,12 +70,32 @@ class WebcamApp:
         )
         self.logger.stopEvent("pyglet_warmup")
 
+    def load_prompts(self):
+        try:
+            with open('prompts.txt', 'r') as f:
+                prompts = [line.strip() for line in f if line.strip()]
+            if not prompts:
+                # Fallback prompt if file is empty
+                return ["a psychedelic landscape"]
+            return prompts
+        except FileNotFoundError:
+            # Fallback prompt if file doesn't exist
+            return ["a psychedelic landscape"]
+
+    def get_current_prompt(self):
+        current_time = time.time()
+        if current_time - self.last_prompt_change >= PROMPT_CYCLE_TIME:
+            self.current_prompt_idx = (self.current_prompt_idx + 1) % len(self.prompts)
+            self.last_prompt_change = current_time
+        return self.prompts[self.current_prompt_idx]
+
     def capture_loop(self):
         # Initialize webcam
-        cap = cv2.VideoCapture(10)
+        cap = cv2.VideoCapture(1)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
-        cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
+        cap.set(cv2.CAP_PROP_FPS, 24)
         
         # Initialize ZMQ socket for distribution
         socket = self.context.socket(zmq.PUSH)
@@ -89,10 +115,10 @@ class WebcamApp:
                 if not ret:
                     continue
                 
-                # reduce the framerate just slightly
+                # reduce the framerate by half
                 frame_count += 1
-                if frame_count % 6 == 0:
-                    continue
+                # if frame_count % 2 == 0:
+                #     continue
                 
                 h, w = frame.shape[:2]
                 start_x = (w - TARGET_SIZE) // 2
@@ -112,10 +138,13 @@ class WebcamApp:
                         timestamps = [f[0] for f in self.frame_buffer]
                         frames = [f[1].tobytes() for f in self.frame_buffer]
                         
+                        # Get current prompt
+                        current_prompt = self.get_current_prompt()
+                        
                         socket.send_multipart([
                             *[t.encode() for t in timestamps],
                             *frames,
-                            "a psychedelic landscape".encode()
+                            current_prompt.encode()
                         ], flags=zmq.DONTWAIT)
                         
                     except zmq.Again:
@@ -194,26 +223,20 @@ class WebcamApp:
                 window_width = self.window.width
                 window_height = self.window.height
                 
-                # Calculate scale factor to fit the window while maintaining aspect ratio
-                scale_x = window_width / TARGET_SIZE
-                scale_y = window_height / TARGET_SIZE
-                scale = min(scale_x, scale_y)
-                
-                # Calculate centered position
-                x = (window_width - TARGET_SIZE * scale) / 2
-                scaled_height = TARGET_SIZE * scale
-                y = TARGET_SIZE
-                
                 # Get a flipped version of the image
                 pyglet_image = pyglet.image.ImageData(
                     TARGET_SIZE, TARGET_SIZE, 'RGB', img.tobytes(), pitch=TARGET_SIZE * 3
                 )
-                flipped_frame = pyglet_image.get_texture().get_transform(flip_y=True)
+                flipped_frame = pyglet_image.get_texture().get_transform(flip_y=True, flip_x=True)
+                flipped_frame.anchor_x = 0
+                flipped_frame.anchor_y = 0
                 self.logger.stopEvent("update_frame")
             
                 # Draw the scaled, centered, and flipped image
                 self.logger.startEvent("blit_frame")
-                flipped_frame.blit(x, y, width=TARGET_SIZE * scale, height=scaled_height)
+                side = 1200
+                x = (window_width - side) / 2
+                flipped_frame.blit(x, 0, width=side, height=side)
                 self.logger.stopEvent("blit_frame")
             
             except Empty:

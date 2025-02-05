@@ -12,7 +12,7 @@ maximum_delay = 1
 class Worker:
     def __init__(self, gpu_id: int = 0):
         self.process_name = f"worker_gpu{gpu_id}"
-        self.logger = TraceLogger("worker", self.process_name)
+        self.logger = TraceLogger("worker", self.process_name, enabled=False)
         self.running = True
         self.processor = Processor()
         

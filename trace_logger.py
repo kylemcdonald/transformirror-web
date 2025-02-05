@@ -7,24 +7,31 @@ import multiprocessing
 from contextlib import contextmanager
 
 class TraceLogger:
-    def __init__(self, script_name, process_name=None):
+    def __init__(self, script_name, process_name=None, enabled=True):
         self.script_name = script_name
         self.process_name = process_name or script_name  # Default to script_name if not provided
         self.pid = os.getpid()
-        self.context = zmq.Context()
-        self.socket = self.context.socket(zmq.PUSH)
-        self.ipc_path = os.path.join(os.getcwd(), ".trace_socket")
-        self.socket.connect(f"ipc://{self.ipc_path}")
-        self.socket.setsockopt(zmq.SNDTIMEO, 1000)
-        self.socket.setsockopt(zmq.LINGER, 0)
+        self.enabled = enabled
+        
+        if self.enabled:
+            self.context = zmq.Context()
+            self.socket = self.context.socket(zmq.PUSH)
+            self.ipc_path = os.path.join(os.getcwd(), ".trace_socket")
+            self.socket.connect(f"ipc://{self.ipc_path}")
+            self.socket.setsockopt(zmq.SNDTIMEO, 1000)
+            self.socket.setsockopt(zmq.LINGER, 0)
         
         self._event_starts = {}
         
-        # Send process metadata event
-        self._send_process_metadata()
+        # Send process metadata event only if enabled
+        if self.enabled:
+            self._send_process_metadata()
         
     def _send_process_metadata(self):
         """Send process metadata event to help identify processes in the trace."""
+        if not self.enabled:
+            return
+            
         metadata = {
             "name": "process_name",
             "ph": "M",  # Metadata event
@@ -44,6 +51,9 @@ class TraceLogger:
 
     def startEvent(self, event_name):
         """Start timing an event."""
+        if not self.enabled:
+            return
+            
         tid = self._get_thread_id()
         current_ts = int(time.time() * 1_000_000)
         key = (event_name, tid)
@@ -51,6 +61,9 @@ class TraceLogger:
 
     def stopEvent(self, event_name):
         """Stop timing an event and send the completed event with duration."""
+        if not self.enabled:
+            return
+            
         tid = self._get_thread_id()
         key = (event_name, tid)
         
@@ -79,6 +92,11 @@ class TraceLogger:
             
     def instantEvent(self, event_name, args=None):
         """Log an instant event with optional arguments."""
+        print(event_name)
+        
+        if not self.enabled:
+            return
+            
         current_ts = int(time.time() * 1_000_000)
         event = {
             "name": event_name,
@@ -98,9 +116,9 @@ class TraceLogger:
             print(f"Error sending instant trace event: {e}")
             
     def __del__(self):
-        if hasattr(self, 'socket'):
+        if hasattr(self, 'socket') and self.enabled:
             self.socket.close()
-        if hasattr(self, 'context'):
+        if hasattr(self, 'context') and self.enabled:
             self.context.destroy()
 
     @contextmanager

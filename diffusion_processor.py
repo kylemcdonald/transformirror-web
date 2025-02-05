@@ -71,6 +71,7 @@ class DiffusionProcessor:
                     device=self.device
                 )
                 self.prompt_cache = FixedSizeDict(32)
+                self.negative_prompt_cache = FixedSizeDict(32)
                 print(f"{self.device}: prepared compel")
             else:
                 self.compel = None
@@ -101,17 +102,22 @@ class DiffusionProcessor:
                 self.prompt_cache[prompt] = self.compel(prompt)
         return self.prompt_cache[prompt]
     
-    def meta_embed_prompt(self, prompt):
+    def meta_embed_prompt(self, prompt, is_negative=False):
         pattern = r'\("(.*?)"\s*,\s*"(.*?)"\)\.blend\((.*?),(.*?)\)'
         match = re.search(pattern, prompt)
         if not match:
-            result = self.embed_prompt(prompt)
-            return result
+            cache = self.negative_prompt_cache if is_negative else self.prompt_cache
+            if prompt not in cache:
+                with torch.no_grad():
+                    print(f"{self.device}: embedding {'negative ' if is_negative else ''}prompt", prompt)
+                    cache[prompt] = self.compel(prompt)
+            return cache[prompt]
+        
         str1, str2, t1, t2 = match.groups()
         t1 = float(t1)
         t2 = float(t2)
-        cond1, pool1 = self.embed_prompt(str1)
-        cond2, pool2 = self.embed_prompt(str2)
+        cond1, pool1 = self.meta_embed_prompt(str1, is_negative)
+        cond2, pool2 = self.meta_embed_prompt(str2, is_negative)
         cond = cond1 * t1 + cond2 * t2
         pool = pool1 * t1 + pool2 * t2
         return cond, pool
@@ -129,13 +135,15 @@ class DiffusionProcessor:
                 pooled_batch = pooled.expand(batch_size, -1)
                 kwargs["prompt_embeds"] = conditioning_batch
                 kwargs["pooled_prompt_embeds"] = pooled_batch
+                kwargs["guidance_scale"] = 0
             else:
                 kwargs["prompt"] = [prompt] * len(images)
+                kwargs["guidance_scale"] = 0
+
             result = self.pipe(
                 image=images,
                 generator=self.generator,
                 num_inference_steps=num_inference_steps,
-                guidance_scale=0,
                 strength=strength,
                 output_type="np",
                 **kwargs
