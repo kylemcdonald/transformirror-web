@@ -1,5 +1,5 @@
-SERVICE_ID=transformirror-workers
-SERVICE_NAME="transformirror workers"
+SERVICE_ID=transformirror-local
+SERVICE_NAME="transformirror local"
 
 USER=bizon
 SERVICES_DIR=/etc/systemd/system/
@@ -11,7 +11,7 @@ Wants=network-online.target
 After=network-online.target
 [Service]
 WorkingDirectory=$(pwd)
-ExecStart=$(pwd)/run-workers.sh
+ExecStart=$(pwd)/run-local.sh
 User=$USER
 Restart=always
 [Install]

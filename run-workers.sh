@@ -14,7 +14,7 @@ trap cleanup SIGINT
         echo "Starting worker $i"
         # export HF_HOME=/workspace/.cache
         # source venv/bin/activate
-        CUDA_VISIBLE_DEVICES=$i python3 worker.py &
+        CUDA_VISIBLE_DEVICES=$i /home/bizon/anaconda3/bin/python3 worker.py &
     done
     wait
 ) &

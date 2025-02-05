@@ -1,10 +1,10 @@
 SERVICE_ID=transformirror-server
 SERVICE_NAME="transformirror server"
 
-USER=$(whoami)
+USER=bizon
 SERVICES_DIR=/etc/systemd/system/
 
-cat >$SERVICES_DIR/$SERVICE_ID.service <<EOL
+sudo cat >$SERVICES_DIR/$SERVICE_ID.service <<EOL
 [Unit]
 Description=$SERVICE_NAME
 Wants=network-online.target
@@ -12,13 +12,13 @@ After=network-online.target
 [Service]
 WorkingDirectory=$(pwd)
 ExecStart=$(pwd)/run-server.sh
-User=root
+User=$USER
 Restart=always
 [Install]
 WantedBy=multi-user.target
 EOL
 
-systemctl daemon-reload
+sudo systemctl daemon-reload
 
-systemctl enable $SERVICE_ID
-systemctl start $SERVICE_ID
+sudo systemctl enable $SERVICE_ID
+sudo systemctl start $SERVICE_ID
