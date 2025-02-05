@@ -1,11 +1,5 @@
 {
-    "mask": {
-        "x": 941,
-        "y": 215,
-        "radius": 15
-    },
     "show_processed": true,
     "camera_fps": 20,
-    "prompt_cycle_time": 15,
-    "keystone_mask": 25
-} 
+    "prompt_cycle_time": 15
+}

@@ -64,6 +64,13 @@ class WebcamApp:
         self.current_prompt_idx = 0
         self.last_prompt_change = time.time()
         
+        # Add white square toggle
+        self.show_white_square = False
+        
+        # Load mask texture
+        mask_image = pyglet.image.load('mask.png')
+        self.mask_texture = mask_image.get_texture()
+        
         # Schedule updates
         pyglet.clock.schedule_interval(self.update_frame, 1/60.0)
         pyglet.clock.schedule_interval(self.check_settings, 1.0)
@@ -92,40 +99,6 @@ class WebcamApp:
         # Register event handlers
         self.window.event(self.on_draw)
         self.window.event(self.on_key_press)
-        
-        # Create shapes batch
-        self.batch = pyglet.graphics.Batch()
-        
-        # Create circle shape
-        self.circle = pyglet.shapes.Circle(
-            x=self.mask_settings["x"],
-            y=self.mask_settings["y"],
-            radius=self.mask_settings["radius"],
-            color=(0, 0, 0),
-            batch=self.batch
-        )
-        
-        # Calculate image position and size
-        self.side = 1200  # Fixed image size
-        window_width = self.window.width
-        x = (window_width - self.side) / 2  # Left edge of image
-        
-        # Create keystone mask triangles
-        self.left_mask = pyglet.shapes.Triangle(
-            x, self.side,  # Top left (at image edge)
-            x, 0,  # Bottom left
-            x + self.keystone_mask, 0,  # Bottom right
-            color=(0, 0, 0),  # Red color
-            batch=self.batch
-        )
-        
-        self.right_mask = pyglet.shapes.Triangle(
-            x + self.side, self.side,  # Top right (at image edge)
-            x + self.side, 0,  # Bottom right
-            x + self.side - self.keystone_mask, 0,  # Bottom left
-            color=(0, 0, 0),  # Red color
-            batch=self.batch
-        )
 
     def load_prompts(self):
         try:
@@ -144,15 +117,9 @@ class WebcamApp:
     def load_settings(self):
         with open(self.settings_file, 'r') as f:
             settings = json.load(f)
-            self.mask_settings = settings.get("mask", {
-                "x": 941.0,
-                "y": 215.0,
-                "radius": 50
-            })
             self.camera_fps = settings.get("camera_fps", 20)
             self.prompt_cycle_time = settings.get("prompt_cycle_time", 10)
             self.settings_show_processed = settings.get("show_processed", False)
-            self.keystone_mask = settings.get("keystone_mask", 100)
 
     def check_settings(self, dt):
         try:
@@ -166,24 +133,6 @@ class WebcamApp:
                 return
 
             self.load_settings()
-            # Update circle in main thread
-            self.circle.x = self.mask_settings["x"]
-            self.circle.y = self.mask_settings["y"]
-            self.circle.radius = self.mask_settings["radius"]
-            
-            # Update keystone masks
-            window_width = self.window.width
-            x = (window_width - self.side) / 2  # Left edge of image
-            
-            # Update left mask
-            self.left_mask.x1 = x  # Top left x
-            self.left_mask.x2 = x  # Bottom left x
-            self.left_mask.x3 = x + self.keystone_mask  # Bottom right x
-            
-            # Update right mask
-            self.right_mask.x1 = x + self.side  # Top right x
-            self.right_mask.x2 = x + self.side  # Bottom right x
-            self.right_mask.x3 = x + self.side - self.keystone_mask  # Bottom left x
         except Exception:
             pass
 
@@ -318,19 +267,34 @@ class WebcamApp:
         try:
             self.window.clear()
             
-            # Choose texture to display
-            texture = self.processed_texture if self.show_processed else self.current_texture
-            if texture is not None:
-                texture.anchor_x = 0
-                texture.anchor_y = 0
-                window_width = self.window.width
-                side = 1200
-                x = (window_width - side) / 2
-                texture.blit(x, 0, width=side, height=side)
+            window_width = self.window.width
+            window_height = self.window.height
+            side = 1200
+            x = (window_width - side) / 2
             
-            self.batch.draw()
+            if self.show_white_square:
+                # Draw white square
+                white_square = pyglet.shapes.Rectangle(x=x, y=0, width=side, height=side, 
+                                                     color=(255, 255, 255))
+                white_square.draw()
+            else:
+                # Draw webcam preview
+                texture = self.processed_texture if self.show_processed else self.current_texture
+                if texture is not None:
+                    # Draw the main texture
+                    texture.anchor_x = 0
+                    texture.anchor_y = 0
+                    texture.blit(x, 0, width=side, height=side)
+                    
         except Exception:
             pass
+        
+        # Draw the mask texture with multiply blend mode
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_DST_COLOR, GL_ZERO)  # Multiply blend mode
+        self.mask_texture.blit(0, 0, width=window_width, height=window_height)
+        glDisable(GL_BLEND)
+
 
     def on_key_press(self, symbol, modifiers):
         if symbol == pyglet.window.key.ESCAPE:
@@ -338,6 +302,8 @@ class WebcamApp:
             pyglet.app.exit()
         elif symbol == pyglet.window.key.SPACE:
             self.show_processed = not self.show_processed
+        elif symbol == pyglet.window.key.W:
+            self.show_white_square = not self.show_white_square
 
     def run(self):
         self.capture_thread.start()
