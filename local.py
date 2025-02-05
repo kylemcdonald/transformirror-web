@@ -93,13 +93,37 @@ class WebcamApp:
         self.window.event(self.on_draw)
         self.window.event(self.on_key_press)
         
-        # Create circle shape
+        # Create shapes batch
         self.batch = pyglet.graphics.Batch()
+        
+        # Create circle shape
         self.circle = pyglet.shapes.Circle(
             x=self.mask_settings["x"],
             y=self.mask_settings["y"],
             radius=self.mask_settings["radius"],
             color=(0, 0, 0),
+            batch=self.batch
+        )
+        
+        # Calculate image position and size
+        self.side = 1200  # Fixed image size
+        window_width = self.window.width
+        x = (window_width - self.side) / 2  # Left edge of image
+        
+        # Create keystone mask triangles
+        self.left_mask = pyglet.shapes.Triangle(
+            x, self.side,  # Top left (at image edge)
+            x, 0,  # Bottom left
+            x + self.keystone_mask, 0,  # Bottom right
+            color=(0, 0, 0),  # Red color
+            batch=self.batch
+        )
+        
+        self.right_mask = pyglet.shapes.Triangle(
+            x + self.side, self.side,  # Top right (at image edge)
+            x + self.side, 0,  # Bottom right
+            x + self.side - self.keystone_mask, 0,  # Bottom left
+            color=(0, 0, 0),  # Red color
             batch=self.batch
         )
 
@@ -128,6 +152,7 @@ class WebcamApp:
             self.camera_fps = settings.get("camera_fps", 20)
             self.prompt_cycle_time = settings.get("prompt_cycle_time", 10)
             self.settings_show_processed = settings.get("show_processed", False)
+            self.keystone_mask = settings.get("keystone_mask", 100)
 
     def check_settings(self, dt):
         try:
@@ -145,6 +170,20 @@ class WebcamApp:
             self.circle.x = self.mask_settings["x"]
             self.circle.y = self.mask_settings["y"]
             self.circle.radius = self.mask_settings["radius"]
+            
+            # Update keystone masks
+            window_width = self.window.width
+            x = (window_width - self.side) / 2  # Left edge of image
+            
+            # Update left mask
+            self.left_mask.x1 = x  # Top left x
+            self.left_mask.x2 = x  # Bottom left x
+            self.left_mask.x3 = x + self.keystone_mask  # Bottom right x
+            
+            # Update right mask
+            self.right_mask.x1 = x + self.side  # Top right x
+            self.right_mask.x2 = x + self.side  # Bottom right x
+            self.right_mask.x3 = x + self.side - self.keystone_mask  # Bottom left x
         except Exception:
             pass
 
@@ -159,7 +198,7 @@ class WebcamApp:
         self.user_show_processed = value
 
     def capture_loop(self):
-        cap = cv2.VideoCapture(1)
+        cap = cv2.VideoCapture(0)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
