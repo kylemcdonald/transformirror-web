@@ -10,6 +10,7 @@ import json
 from queue import Queue, Empty
 from trace_logger import TraceLogger
 import re
+import pygame  # Add pygame import
 
 # Constants
 CAPTURE_WIDTH = 1920
@@ -28,6 +29,8 @@ config = pyglet.gl.Config(
 
 class WebcamApp:
     def __init__(self):
+        pygame.mixer.init()
+        
         # Initialize logger and debug counters
         self.logger = TraceLogger("local", "webcam_display")
         self.frame_count = 0
@@ -62,13 +65,15 @@ class WebcamApp:
         # Load prompts and initialize prompt state
         self.prompts = self.load_prompts()
         self.current_prompt_idx = 0
-        self.last_prompt_change = time.time()
+        self.last_prompt_change = None
         
         # Add white square toggle
         self.show_white_square = False
         
-        # Load mask texture
-        mask_image = pyglet.image.load('mask.png')
+        # Load mask texture and track its modification time
+        self.mask_file = 'mask.png'
+        self.last_mask_mtime = os.path.getmtime(self.mask_file)
+        mask_image = pyglet.image.load(self.mask_file)
         self.mask_texture = mask_image.get_texture()
         
         # Schedule updates
@@ -109,9 +114,20 @@ class WebcamApp:
 
     def get_current_prompt(self):
         current_time = time.time()
-        if current_time - self.last_prompt_change >= self.prompt_cycle_time:
+        if self.last_prompt_change is None or current_time - self.last_prompt_change >= self.prompt_cycle_time:
             self.current_prompt_idx = (self.current_prompt_idx + 1) % len(self.prompts)
             self.last_prompt_change = current_time
+            
+            # Play corresponding audio file when prompt changes
+            try:
+                audio_file = f"audio/{self.current_prompt_idx:02d}.wav"
+                if os.path.exists(audio_file):
+                    pygame.mixer.music.stop()
+                    pygame.mixer.music.load(audio_file)
+                    pygame.mixer.music.play()
+            except Exception as e:
+                self.logger.error(f"Error playing audio: {str(e)}")
+            
         return self.prompts[self.current_prompt_idx]
 
     def load_settings(self):
@@ -123,18 +139,30 @@ class WebcamApp:
 
     def check_settings(self, dt):
         try:
-            # Only reload settings if file has changed
+            # Check settings file
             try:
-                mtime = os.path.getmtime(self.settings_file)
-                if mtime <= self.last_settings_mtime:
-                    return
-                self.last_settings_mtime = mtime
+                settings_mtime = os.path.getmtime(self.settings_file)
+                if settings_mtime > self.last_settings_mtime:
+                    self.last_settings_mtime = settings_mtime
+                    self.load_settings()
             except OSError:
-                return
+                pass
 
-            self.load_settings()
-        except Exception:
-            pass
+            # Check mask file
+            try:
+                mask_mtime = os.path.getmtime(self.mask_file)
+                if mask_mtime > self.last_mask_mtime:
+                    self.last_mask_mtime = mask_mtime
+                    # Reload mask texture
+                    if self.mask_texture:
+                        self.mask_texture.delete()
+                    mask_image = pyglet.image.load(self.mask_file)
+                    self.mask_texture = mask_image.get_texture()
+            except OSError:
+                pass
+
+        except Exception as e:
+            self.logger.error(f"Error in check_settings: {str(e)}")
 
     @property
     def show_processed(self):
@@ -259,7 +287,8 @@ class WebcamApp:
         
         if current_time - self.last_fps_time >= 1.0:
             fps = self.frame_count / (current_time - self.last_fps_time)
-            print(f"FPS: {fps:.2f}")
+            if fps < 30:
+                print(f"FPS: {fps:.2f}")
             self.frame_count = 0
             self.processed_count = 0
             self.last_fps_time = current_time
@@ -314,6 +343,7 @@ class WebcamApp:
             self.shutdown.set()
             self.capture_thread.join()
             self.process_thread.join()
+            pygame.mixer.quit()  # Clean up pygame mixer
             self.context.destroy()
             self.collect_socket.close()
             self.distribute_socket.close()
