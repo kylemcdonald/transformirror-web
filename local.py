@@ -120,7 +120,8 @@ class WebcamApp:
             
             # Play corresponding audio file when prompt changes
             try:
-                audio_file = f"audio/{self.current_prompt_idx:02d}.wav"
+                audio_idx = self.current_prompt_idx % len(self.audio_files)
+                audio_file = f"audio/{audio_idx:02d}.wav"
                 if os.path.exists(audio_file):
                     pygame.mixer.music.stop()
                     pygame.mixer.music.load(audio_file)
