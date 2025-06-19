@@ -79,8 +79,17 @@ sudo apt install net-tools
 mkdir -m700 ~/.ssh
 sudo apt install -y openssh-server
 wget -qO- https://github.com/kylemcdonald.keys | head -n1 > ~/.ssh/authorized_keys
-sudo apt install -y python3 python3-pip git libturbojpeg iperf3
+sudo apt install -y git libturbojpeg iperf3
 # check speed with iperf3
+curl -O https://repo.anaconda.com/archive/Anaconda3-2024.10-1-Linux-x86_64.sh
+bash Anaconda3-2024.10-1-Linux-x86_64.sh -b
+source ~/anaconda3/bin/activate
+conda init --all
+conda create -n transformirror python=3.10 -y
+conda activate transformirror
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ## RunPod
@@ -88,7 +97,6 @@ sudo apt install -y python3 python3-pip git libturbojpeg iperf3
 ```
 mkdir /workspace/.cache
 export HF_HOME=/workspace/.cache
-pip3 install -r requirements.txt
 apt update
 apt install libturbojpeg
 python3 -m venv venv
