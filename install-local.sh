@@ -1,7 +1,7 @@
 SERVICE_ID=transformirror-local
 SERVICE_NAME="transformirror local"
 
-USER=bizon
+USER=$(whoami)
 SERVICES_DIR=/etc/systemd/system/
 
 sudo cat >$SERVICES_DIR/$SERVICE_ID.service <<EOL

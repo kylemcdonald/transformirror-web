@@ -1,7 +1,7 @@
 SERVICE_ID=transformirror-workers
 SERVICE_NAME="transformirror workers"
 
-USER=bizon
+USER=$(whoami)
 SERVICES_DIR=/etc/systemd/system/
 
 sudo cat >$SERVICES_DIR/$SERVICE_ID.service <<EOL
