@@ -69,6 +69,20 @@ http://localhost:8443/set?prompt=your new prompt here
 
 Replace "your new prompt here" with the desired prompt text.
 
+## Multi-machine on-site setup
+
+```
+sudo apt install curl
+curl -fsSL https://tailscale.com/install.sh | sh 
+sudo tailscale up
+sudo apt install net-tools
+mkdir -m700 ~/.ssh
+sudo apt install -y openssh-server
+wget -qO- https://github.com/kylemcdonald.keys | head -n1 > ~/.ssh/authorized_keys
+sudo apt install -y python3 python3-pip git libturbojpeg iperf3
+# check speed with iperf3
+```
+
 ## RunPod
 
 ```
