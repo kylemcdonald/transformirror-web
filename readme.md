@@ -87,8 +87,6 @@ source ~/anaconda3/bin/activate
 conda init --all
 conda create -n transformirror python=3.10 -y
 conda activate transformirror
-python3 -m venv venv
-source venv/bin/activate
 pip install -r requirements.txt
 ```
 
