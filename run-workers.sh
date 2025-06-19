@@ -13,7 +13,7 @@ trap cleanup SIGINT
     USERNAME=$(whoami)
     for i in $(seq 0 $FINAL_DEVICE); do
         echo "Starting worker $i"
-        CUDA_VISIBLE_DEVICES=$i /home/$USERNAME/anaconda3/bin/python worker.py &
+        CUDA_VISIBLE_DEVICES=$i /home/$USERNAME/anaconda3/envs/transformirror/bin/python worker.py &
     done
     wait
 ) &

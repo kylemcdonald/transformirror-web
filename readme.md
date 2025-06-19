@@ -88,6 +88,7 @@ conda init --all
 conda create -n transformirror python=3.10 -y
 conda activate transformirror
 pip install -r requirements.txt
+sudo bash install-workers.sh
 ```
 
 ## RunPod
