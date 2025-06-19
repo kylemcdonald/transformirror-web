@@ -84,14 +84,14 @@ class WebcamApp:
         # Socket for sending frames to workers
         self.distribute_socket = self.context.socket(zmq.PUSH)
         self.distribute_socket.set_hwm(QUEUE_SIZE)
-        ipc_path = os.path.join(os.getcwd(), ".distribute_socket")
-        self.distribute_socket.bind(f"ipc://{ipc_path}")
+        # Bind to all interfaces for network access
+        self.distribute_socket.bind("tcp://*:5555")
         self.distribute_socket.setsockopt(zmq.LINGER, 0)
         
         # Socket for receiving processed frames
         self.collect_socket = self.context.socket(zmq.PULL)
-        ipc_path = os.path.join(os.getcwd(), ".collect_socket")
-        self.collect_socket.bind(f"ipc://{ipc_path}")
+        # Bind to all interfaces for network access
+        self.collect_socket.bind("tcp://*:5556")
         self.collect_socket.setsockopt(zmq.RCVTIMEO, 0)
         self.collect_socket.setsockopt(zmq.LINGER, 0)
 

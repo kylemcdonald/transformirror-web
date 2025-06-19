@@ -6,15 +6,17 @@ import time
 from trace_logger import TraceLogger
 from diffusion_processor import DiffusionProcessor as Processor
 import sys
+import argparse
 
 maximum_delay = 1
 
 class Worker:
-    def __init__(self, gpu_id: int = 0):
+    def __init__(self, gpu_id: int = 0, host: str = "transformirror1.local"):
         self.process_name = f"worker_gpu{gpu_id}"
         self.logger = TraceLogger("worker", self.process_name)
         self.running = True
         self.processor = Processor()
+        self.host = host
         
         # Setup ZMQ sockets
         self.context = zmq.Context()
@@ -25,8 +27,11 @@ class Worker:
         socket = self.context.socket(socket_type)
         if socket_type == zmq.PULL:
             socket.set_hwm(1)
-        ipc_path = os.path.join(os.getcwd(), socket_name)
-        socket.connect(f"ipc://{ipc_path}")
+        # Connect to transformirror1.local over TCP
+        if socket_type == zmq.PULL:
+            socket.connect(f"tcp://{self.host}:5555")
+        else:  # zmq.PUSH
+            socket.connect(f"tcp://{self.host}:5556")
         socket.setsockopt(zmq.RCVTIMEO if socket_type == zmq.PULL else zmq.SNDTIMEO, 1000)
         socket.setsockopt(zmq.LINGER, 0)
         return socket
@@ -93,6 +98,12 @@ class Worker:
         self.context.destroy()
 
 if __name__ == "__main__":
-    gpu_id = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-    worker = Worker(gpu_id)
+    parser = argparse.ArgumentParser(description='Worker process for distributed processing')
+    parser.add_argument('--gpu-id', type=int, default=0, help='GPU ID to use')
+    parser.add_argument('--host', type=str, default='transformirror1.local', 
+                       help='Host to connect to (default: transformirror1.local)')
+    
+    args = parser.parse_args()
+    
+    worker = Worker(args.gpu_id, args.host)
     worker.run()
