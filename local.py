@@ -7,7 +7,7 @@ import time
 import numpy as np
 import os
 import json
-from queue import Queue, Empty
+from queue import Queue, Empty, Full
 from trace_logger import TraceLogger
 import re
 import pygame  # Add pygame import
@@ -35,7 +35,6 @@ class WebcamApp:
         self.logger = TraceLogger("local", "webcam_display")
         self.frame_count = 0
         self.last_fps_time = time.time()
-        self.processed_count = 0
         
         # Initialize settings
         self.settings_file = 'settings.json'
@@ -48,12 +47,10 @@ class WebcamApp:
         
         # Initialize queues with fixed size
         self.frame_queue = Queue(maxsize=QUEUE_SIZE)
-        self.processed_queue = Queue(maxsize=QUEUE_SIZE)
         
         # Initialize threading events
         self.shutdown = threading.Event()
         self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
-        self.process_thread = threading.Thread(target=self.process_loop, daemon=True)
         
         # Initialize window and graphics
         self.setup_window()
@@ -221,45 +218,35 @@ class WebcamApp:
         finally:
             cap.release()
 
-    def process_loop(self):
-        """Receive processed frames from workers"""
-        while not self.shutdown.is_set():
-            try:
-                multipart_msg = self.collect_socket.recv_multipart()
-                if len(multipart_msg) != 2:
-                    continue
-                    
+    def update_frame(self, dt):
+        # Try to receive processed frame from workers (non-blocking)
+        try:
+            multipart_msg = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
+            if len(multipart_msg) == 2:
                 _, frame_data = multipart_msg
                 processed_frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
                 
-                # Update processed queue, clearing old frames first
-                while not self.processed_queue.empty():
-                    try:
-                        self.processed_queue.get_nowait()
-                    except Empty:
-                        break
+                # Update processed texture directly
+                image = pyglet.image.ImageData(
+                    TARGET_SIZE, TARGET_SIZE,
+                    'RGB', processed_frame.tobytes(),
+                    pitch=TARGET_SIZE * 3
+                )
                 
-                try:
-                    self.processed_queue.put_nowait(processed_frame)
-                    self.processed_count += 1
-                except Full:
-                    pass
-                    
-            except zmq.Again:
-                continue
-            except Exception:
-                continue
-
-    def update_frame(self, dt):
-        texture_to_update = None
-        data_queue = None
+                if self.processed_texture is None:
+                    self.processed_texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
+                else:
+                    self.processed_texture.blit_into(image, 0, 0, 0)
+        except zmq.Again:
+            # No message available, continue with normal frame update
+            pass
+        except Exception:
+            # Handle any other exceptions silently
+            pass
         
-        if self.show_processed:
-            texture_to_update = self.processed_texture
-            data_queue = self.processed_queue
-        else:
-            texture_to_update = self.current_texture
-            data_queue = self.frame_queue
+        # Update current frame texture
+        texture_to_update = self.current_texture
+        data_queue = self.frame_queue
             
         try:
             frame = data_queue.get_nowait()
@@ -268,14 +255,14 @@ class WebcamApp:
                 'RGB', frame.tobytes(),
                 pitch=TARGET_SIZE * 3
             )
-            if texture_to_update is not None:
-                texture_to_update.delete()
-            new_texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
             
-            if self.show_processed:
-                self.processed_texture = new_texture
+            # Only recreate texture if it doesn't exist or if we need to update it
+            if texture_to_update is None:
+                self.current_texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
             else:
-                self.current_texture = new_texture
+                # Update existing texture data instead of recreating
+                texture_to_update.blit_into(image, 0, 0, 0)
+                
         except Empty:
             pass
         except Exception:
@@ -287,19 +274,22 @@ class WebcamApp:
         
         if current_time - self.last_fps_time >= 1.0:
             fps = self.frame_count / (current_time - self.last_fps_time)
-            if fps < 30:
-                print(f"FPS: {fps:.2f}")
+            # if fps < 30:
+            print(f"FPS: {fps:.2f}")
             self.frame_count = 0
-            self.processed_count = 0
             self.last_fps_time = current_time
+            
+        # return
         
         try:
             self.window.clear()
             
+            # Cache window dimensions to avoid repeated property access
             window_width = self.window.width
             window_height = self.window.height
             side = 1200
             x = (window_width - side) / 2
+            
             
             if self.show_white_square:
                 # Draw white square
@@ -310,20 +300,22 @@ class WebcamApp:
                 # Draw webcam preview
                 texture = self.processed_texture if self.show_processed else self.current_texture
                 if texture is not None:
-                    # Draw the main texture
-                    texture.anchor_x = 0
-                    texture.anchor_y = 0
+                    # Draw the main texture (cache anchor settings)
+                    if not hasattr(texture, '_anchors_set'):
+                        texture.anchor_x = 0
+                        texture.anchor_y = 0
+                        texture._anchors_set = True
                     texture.blit(x, 0, width=side, height=side)
                     
         except Exception:
             pass
         
         # Draw the mask texture with multiply blend mode
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_DST_COLOR, GL_ZERO)  # Multiply blend mode
-        self.mask_texture.blit(0, 0, width=window_width, height=window_height)
-        glDisable(GL_BLEND)
-
+        if self.mask_texture is not None:
+            glEnable(GL_BLEND)
+            glBlendFunc(GL_DST_COLOR, GL_ZERO)  # Multiply blend mode
+            self.mask_texture.blit(0, 0, width=window_width, height=window_height)
+            glDisable(GL_BLEND)
 
     def on_key_press(self, symbol, modifiers):
         if symbol == pyglet.window.key.ESCAPE:
@@ -336,13 +328,11 @@ class WebcamApp:
 
     def run(self):
         self.capture_thread.start()
-        self.process_thread.start()
         try:
             pyglet.app.run()
         finally:
             self.shutdown.set()
             self.capture_thread.join()
-            self.process_thread.join()
             pygame.mixer.quit()  # Clean up pygame mixer
             self.context.destroy()
             self.collect_socket.close()
