@@ -12,6 +12,7 @@ maximum_delay = 1
 
 class Worker:
     def __init__(self, gpu_id: int = 0, host: str = "transformirror1.local"):
+        self.gpu_id = gpu_id
         self.process_name = f"worker_gpu{gpu_id}"
         self.logger = TraceLogger("worker", self.process_name)
         self.running = True
