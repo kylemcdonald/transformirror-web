@@ -60,10 +60,11 @@ class Worker:
                 processed_frame = np.uint8(processed_frame[0] * 255)
             
             with self.logger.event_scope("send_processed_frame"):
-                # Send processed frame back with original timestamp
+                # Send processed frame back with original timestamp and worker ID
                 self.push_socket.send_multipart([
                     timestamp_bytes,
-                    processed_frame.tobytes()
+                    processed_frame.tobytes(),
+                    str(self.gpu_id).encode()
                 ])
             
         except zmq.Again:

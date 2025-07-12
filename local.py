@@ -222,8 +222,12 @@ class WebcamApp:
         # Try to receive processed frame from workers (non-blocking)
         try:
             multipart_msg = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
-            if len(multipart_msg) == 2:
-                _, frame_data = multipart_msg
+            if len(multipart_msg) == 3:
+                timestamp_str, frame_data, worker_id_bytes = multipart_msg
+                timestamp = float(timestamp_str.decode())
+                worker_id = worker_id_bytes.decode()
+                print(f"Received processed frame with timestamp: {timestamp} from worker GPU {worker_id}")
+                
                 processed_frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
                 
                 # Update processed texture directly
