@@ -226,7 +226,7 @@ class WebcamApp:
                 timestamp_str, frame_data, worker_id_bytes = multipart_msg
                 timestamp = float(timestamp_str.decode())
                 worker_id = worker_id_bytes.decode()
-                print(f"Received processed frame with timestamp: {timestamp} from worker GPU {worker_id}")
+                print(f"{worker_id} @{timestamp % 10:0.3f}")
                 
                 processed_frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
                 

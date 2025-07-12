@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import os
 import time
+import socket
 from trace_logger import TraceLogger
 from diffusion_processor import DiffusionProcessor as Processor
 import sys
@@ -18,6 +19,7 @@ class Worker:
         self.running = True
         self.processor = Processor()
         self.host = host
+        self.hostname = socket.gethostname()
         
         # Setup ZMQ sockets
         self.context = zmq.Context()
@@ -62,10 +64,11 @@ class Worker:
             
             with self.logger.event_scope("send_processed_frame"):
                 # Send processed frame back with original timestamp and worker ID
+                worker_id = f"{self.hostname}/{self.gpu_id}"
                 self.push_socket.send_multipart([
                     timestamp_bytes,
                     processed_frame.tobytes(),
-                    str(self.gpu_id).encode()
+                    worker_id.encode()
                 ])
             
         except zmq.Again:
