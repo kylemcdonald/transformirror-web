@@ -17,8 +17,8 @@ import subprocess
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
-QUEUE_SIZE = 2
-FRAME_LATENCY_MS = 600  # latency for frame ordering - adjust this value as needed
+QUEUE_SIZE = 4
+FRAME_LATENCY_MS = 400  # latency for frame ordering - adjust this value as needed
 
 # OpenGL configuration for antialiasing and alpha blending
 config = pyglet.gl.Config(
@@ -47,6 +47,10 @@ class WebcamApp:
         self.frame_buffer = OrderedDict()  # frame_index -> (timestamp, texture)
         self.last_display_time = time.time()
         self.display_interval = None  # Will be set after loading settings
+        
+        # Initialize display frame rate tracking
+        self.display_frame_count = 0
+        self.last_display_fps_time = time.time()
         
         # Initialize settings
         self.settings_file = 'settings.json'
@@ -147,9 +151,8 @@ class WebcamApp:
     def load_settings(self):
         with open(self.settings_file, 'r') as f:
             settings = json.load(f)
-            self.camera_fps = settings.get("camera_fps", 15)
+            self.camera_fps = settings.get("camera_fps", 20)
             self.prompt_cycle_time = settings.get("prompt_cycle_time", 10)
-            self.settings_show_processed = settings.get("show_processed", False)
             # Set display interval to match camera FPS
             self.display_interval = 1.0 / self.camera_fps
 
@@ -181,16 +184,6 @@ class WebcamApp:
 
         except Exception as e:
             self.logger.error(f"Error in check_settings: {str(e)}")
-
-    @property
-    def show_processed(self):
-        if hasattr(self, 'user_show_processed'):
-            return self.user_show_processed
-        return self.settings_show_processed
-
-    @show_processed.setter
-    def show_processed(self, value):
-        self.user_show_processed = value
 
     def setup_ffmpeg_pipe(self):
         """Setup FFmpeg pipe for webcam capture with cropping"""
@@ -246,7 +239,7 @@ class WebcamApp:
             return
         
         last_send_time = 0
-        send_interval = 1.0 / 30  # Limit sending to workers to 30fps
+        send_interval = 1.0 / 60  # Limit sending to workers to 60fps
         
         try:
             while not self.shutdown.is_set():
@@ -351,6 +344,14 @@ class WebcamApp:
             # Display the frame
             timestamp, texture = self.frame_buffer.pop(next_frame_index)
             
+            # Track display frame rate
+            self.display_frame_count += 1
+            if current_time - self.last_display_fps_time >= 10.0:
+                display_fps = self.display_frame_count / (current_time - self.last_display_fps_time)
+                print(f"Display Frame Rate: {display_fps:.2f} fps")
+                self.display_frame_count = 0
+                self.last_display_fps_time = current_time
+            
             # Clean up the previous processed texture before replacing it
             if self.processed_texture is not None and self.processed_texture != texture:
                 try:
@@ -441,22 +442,34 @@ class WebcamApp:
             
             if self.show_white_square:
                 # Draw white square
-                white_square = pyglet.shapes.Rectangle(x=x, y=0, width=side, height=side, 
+                # white_square = pyglet.shapes.Rectangle(x=x, y=0, width=side, height=side, 
+                #                                      color=(255, 255, 255))
+                white_square = pyglet.shapes.Rectangle(x=0, y=0, width=window_width, height=window_height, 
                                                      color=(255, 255, 255))
                 white_square.draw()
             else:
                 # Draw webcam preview
-                texture = self.processed_texture if self.show_processed else self.current_texture
+                texture = self.processed_texture
                 if texture is not None:
                     # Draw the main texture (cache anchor settings)
                     if not hasattr(texture, '_anchors_set'):
                         texture.anchor_x = 0
                         texture.anchor_y = 0
                         texture._anchors_set = True
-                    texture.blit(x, 0, width=side, height=side)
+                    # texture.blit(x, 0, width=side, height=side)
+                    texture.blit(0, 0, width=window_width, height=window_height)
                     
         except Exception:
             pass
+        
+        # Draw diagonal lines
+        # Line from top-left to bottom-right
+        line1 = pyglet.shapes.Line(0, window_height, window_width, 0, color=(255, 0, 0))
+        line1.draw()
+        
+        # Line from top-right to bottom-left
+        line2 = pyglet.shapes.Line(window_width, window_height, 0, 0, color=(0, 255, 0))
+        line2.draw()
         
         # Draw the mask texture with multiply blend mode
         if self.mask_texture is not None:
@@ -469,8 +482,6 @@ class WebcamApp:
         if symbol == pyglet.window.key.ESCAPE:
             self.shutdown.set()
             pyglet.app.exit()
-        elif symbol == pyglet.window.key.SPACE:
-            self.show_processed = not self.show_processed
         elif symbol == pyglet.window.key.W:
             self.show_white_square = not self.show_white_square
 
