@@ -4,3 +4,6 @@ __pycache__
 venv
 config.sh
 audio
+*.mp4
+*.csv
+*.png
