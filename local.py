@@ -1,4 +1,3 @@
-import cv2
 import pyglet
 from pyglet.gl import *
 import zmq
@@ -12,13 +11,14 @@ from trace_logger import TraceLogger
 import re
 import pygame  # Add pygame import
 from collections import OrderedDict
+import subprocess
 
 # Constants
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
 QUEUE_SIZE = 2
-FRAME_LATENCY_MS = 500  # 500ms latency for frame ordering - adjust this value as needed
+FRAME_LATENCY_MS = 600  # latency for frame ordering - adjust this value as needed
 
 # OpenGL configuration for antialiasing and alpha blending
 config = pyglet.gl.Config(
@@ -80,14 +80,19 @@ class WebcamApp:
         self.show_white_square = False
         
         # Load mask texture and track its modification time
-        self.mask_file = 'mask.png'
-        self.last_mask_mtime = os.path.getmtime(self.mask_file)
-        mask_image = pyglet.image.load(self.mask_file)
-        self.mask_texture = mask_image.get_texture()
+        # self.mask_file = 'mask.png'
+        # self.last_mask_mtime = os.path.getmtime(self.mask_file)
+        # mask_image = pyglet.image.load(self.mask_file)
+        # self.mask_texture = mask_image.get_texture()
+        self.mask_texture = None
+        
+        # Initialize FFmpeg pipe
+        self.ffmpeg_pipe = None
         
         # Schedule updates
         pyglet.clock.schedule_interval(self.update_frame, 1/60.0)
         pyglet.clock.schedule_interval(self.check_settings, 1.0)
+        pyglet.clock.schedule_interval(self.cleanup_old_frames, 5.0)  # Clean up every 5 seconds
 
     def setup_sockets(self):
         # Socket for sending frames to workers
@@ -162,17 +167,17 @@ class WebcamApp:
                 pass
 
             # Check mask file
-            try:
-                mask_mtime = os.path.getmtime(self.mask_file)
-                if mask_mtime > self.last_mask_mtime:
-                    self.last_mask_mtime = mask_mtime
-                    # Reload mask texture
-                    if self.mask_texture:
-                        self.mask_texture.delete()
-                    mask_image = pyglet.image.load(self.mask_file)
-                    self.mask_texture = mask_image.get_texture()
-            except OSError:
-                pass
+            # try:
+            #     mask_mtime = os.path.getmtime(self.mask_file)
+            #     if mask_mtime > self.last_mask_mtime:
+            #         self.last_mask_mtime = mask_mtime
+            #         # Reload mask texture
+            #         if self.mask_texture:
+            #             self.mask_texture.delete()
+            #         mask_image = pyglet.image.load(self.mask_file)
+            #         self.mask_texture = mask_image.get_texture()
+            # except OSError:
+            #     pass
 
         except Exception as e:
             self.logger.error(f"Error in check_settings: {str(e)}")
@@ -187,43 +192,86 @@ class WebcamApp:
     def show_processed(self, value):
         self.user_show_processed = value
 
+    def setup_ffmpeg_pipe(self):
+        """Setup FFmpeg pipe for webcam capture with cropping"""
+        # Calculate crop parameters
+        crop_x = (CAPTURE_WIDTH - TARGET_SIZE) // 2
+        crop_y = (CAPTURE_HEIGHT - TARGET_SIZE) // 2
+        
+        # FFmpeg command with cropping and RGB output
+        ffmpeg_cmd = (
+            f"ffmpeg -hide_banner -loglevel error "
+            f"-f v4l2 -input_format mjpeg -framerate {self.camera_fps} "
+            f"-video_size {CAPTURE_WIDTH}x{CAPTURE_HEIGHT} -i /dev/video0 "
+            f"-vf crop={TARGET_SIZE}:{TARGET_SIZE}:{crop_x}:{crop_y} "
+            "-f rawvideo -pix_fmt rgb24 -"
+        )
+        
+        try:
+            self.ffmpeg_pipe = subprocess.Popen(
+                ffmpeg_cmd.split(), 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.DEVNULL
+            )
+            print(f"FFmpeg pipe started: {ffmpeg_cmd}")
+        except FileNotFoundError:
+            print("Error: ffmpeg not found. Please install ffmpeg.")
+            self.shutdown.set()
+            return False
+        except Exception as e:
+            print(f"Error starting FFmpeg pipe: {e}")
+            self.shutdown.set()
+            return False
+        
+        return True
+
+    def cleanup_ffmpeg_pipe(self):
+        """Clean shutdown of ffmpeg process"""
+        if self.ffmpeg_pipe:
+            print("Cleaning up ffmpeg process...")
+            # Send SIGTERM first
+            self.ffmpeg_pipe.terminate()
+            try:
+                self.ffmpeg_pipe.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                # If SIGTERM doesn't work, force kill
+                self.ffmpeg_pipe.kill()
+                self.ffmpeg_pipe.wait()
+            finally:
+                self.ffmpeg_pipe.stdout.close()
+                self.ffmpeg_pipe = None
+
     def capture_loop(self):
-        cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
-        cap.set(cv2.CAP_PROP_FPS, self.camera_fps)
+        if not self.setup_ffmpeg_pipe():
+            return
         
         last_send_time = 0
         send_interval = 1.0 / 30  # Limit sending to workers to 30fps
         
         try:
             while not self.shutdown.is_set():
-                ret, frame = cap.read()
-                if not ret:
+                # Read frame data from FFmpeg pipe
+                frame_data = self.ffmpeg_pipe.stdout.read(TARGET_SIZE * TARGET_SIZE * 3)
+                if not frame_data:
                     time.sleep(0.01)
                     continue
 
                 # Track input frame rate
                 self.input_frame_count += 1
                 current_time = time.time()
-                if current_time - self.last_input_fps_time >= 1.0:
+                if current_time - self.last_input_fps_time >= 10.0:
                     input_fps = self.input_frame_count / (current_time - self.last_input_fps_time)
                     print(f"Camera FPS: {input_fps:.2f}")
                     self.input_frame_count = 0
                     self.last_input_fps_time = current_time
 
-                # Crop and convert frame
-                h, w = frame.shape[:2]
-                start_x = (w - TARGET_SIZE) // 2
-                start_y = (h - TARGET_SIZE) // 2
-                cropped = frame[start_y:start_y+TARGET_SIZE, start_x:start_x+TARGET_SIZE]
-                cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+                # Convert frame data to numpy array (already RGB from FFmpeg)
+                frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
                 
                 # Update display queue if empty
                 if self.frame_queue.empty():
                     try:
-                        self.frame_queue.put_nowait(cropped)
+                        self.frame_queue.put_nowait(frame)
                     except Full:
                         pass
                 
@@ -231,7 +279,7 @@ class WebcamApp:
                 current_time = time.time()
                 if current_time - last_send_time >= send_interval:
                     try:
-                        frame_float = np.float32(cropped) / 255.0
+                        frame_float = np.float32(frame) / 255.0
                         self.distribute_socket.send_multipart([
                             str(current_time).encode(),
                             frame_float.tobytes(),
@@ -243,7 +291,7 @@ class WebcamApp:
                     except zmq.Again:
                         pass
         finally:
-            cap.release()
+            self.cleanup_ffmpeg_pipe()
 
     def update_frame(self, dt):
         current_time = time.time()
@@ -263,6 +311,11 @@ class WebcamApp:
                 
                 # Check if frame arrived within latency window
                 frame_age = current_time - timestamp
+                
+                # write the frame age to a file
+                with open('frame_age.csv', 'a') as f:
+                    f.write(f"{frame_age*1000:.1f}\n")
+                
                 if frame_age <= FRAME_LATENCY_MS / 1000.0:
                     processed_frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
                     
@@ -297,6 +350,14 @@ class WebcamApp:
         if next_frame_index is not None:
             # Display the frame
             timestamp, texture = self.frame_buffer.pop(next_frame_index)
+            
+            # Clean up the previous processed texture before replacing it
+            if self.processed_texture is not None and self.processed_texture != texture:
+                try:
+                    self.processed_texture.delete()
+                except:
+                    pass  # Texture might already be deleted
+            
             self.processed_texture = texture
             self.last_display_time = current_time
         else:
@@ -306,6 +367,11 @@ class WebcamApp:
                 oldest_timestamp = self.frame_buffer[oldest_frame][0]
                 if current_time - oldest_timestamp > FRAME_LATENCY_MS / 1000.0:
                     dropped_frame = self.frame_buffer.pop(oldest_frame)
+                    # Clean up the dropped frame's texture
+                    try:
+                        dropped_frame[1].delete()
+                    except:
+                        pass  # Texture might already be deleted
                     print(f"Dropped frame {oldest_frame} - exceeded latency window")
         
         # Update current frame texture (for unprocessed view)
@@ -332,11 +398,29 @@ class WebcamApp:
         except Exception:
             pass
 
+    def cleanup_old_frames(self, dt):
+        """Cleans up frames older than a certain threshold to prevent memory buildup."""
+        current_time = time.time()
+        threshold_time = current_time - (FRAME_LATENCY_MS / 1000.0 + 1) # Clean up frames older than 501ms
+        
+        frames_to_delete = []
+        for frame_index, (timestamp, texture) in list(self.frame_buffer.items()):
+            if timestamp < threshold_time:
+                frames_to_delete.append(frame_index)
+        
+        for frame_index in frames_to_delete:
+            timestamp, texture = self.frame_buffer.pop(frame_index)
+            try:
+                texture.delete()
+            except:
+                pass
+            print(f"Cleaned up frame {frame_index} (old)")
+
     def on_draw(self):
         self.frame_count += 1
         current_time = time.time()
         
-        if current_time - self.last_fps_time >= 1.0:
+        if current_time - self.last_fps_time >= 10.0:
             fps = self.frame_count / (current_time - self.last_fps_time)
             # if fps < 30:
             print(f"Display FPS: {fps:.2f}")
@@ -397,10 +481,45 @@ class WebcamApp:
         finally:
             self.shutdown.set()
             self.capture_thread.join()
+            
+            # Clean up textures
+            self.cleanup_textures()
+            
+            # Clean up FFmpeg pipe
+            self.cleanup_ffmpeg_pipe()
+            
             pygame.mixer.quit()  # Clean up pygame mixer
             self.context.destroy()
             self.collect_socket.close()
             self.distribute_socket.close()
+
+    def cleanup_textures(self):
+        """Clean up all textures to free GPU memory"""
+        try:
+            # Clean up current textures
+            if self.current_texture:
+                self.current_texture.delete()
+                self.current_texture = None
+            
+            if self.processed_texture:
+                self.processed_texture.delete()
+                self.processed_texture = None
+            
+            # Clean up frame buffer textures
+            for frame_index, (timestamp, texture) in list(self.frame_buffer.items()):
+                try:
+                    texture.delete()
+                except:
+                    pass
+            self.frame_buffer.clear()
+            
+            # Clean up mask texture
+            if self.mask_texture:
+                self.mask_texture.delete()
+                self.mask_texture = None
+                
+        except Exception as e:
+            self.logger.error(f"Error during texture cleanup: {str(e)}")
 
 if __name__ == '__main__':
     app = WebcamApp()
