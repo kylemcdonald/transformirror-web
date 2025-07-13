@@ -44,9 +44,10 @@ class Worker:
             # Receive and validate single frame
             multipart_msg = self.pull_socket.recv_multipart()
             
-            # First element is timestamp, second is frame, third is prompt
-            timestamp_bytes, frame_data, prompt = multipart_msg
+            # First element is timestamp, second is frame, third is prompt, fourth is frame index
+            timestamp_bytes, frame_data, prompt, frame_index_bytes = multipart_msg
             timestamp = timestamp_bytes.decode()
+            frame_index = frame_index_bytes.decode()
             
             # Check frame for delay
             if not self.check_frame_delay(timestamp):
@@ -63,12 +64,13 @@ class Worker:
                 processed_frame = np.uint8(processed_frame[0] * 255)
             
             with self.logger.event_scope("send_processed_frame"):
-                # Send processed frame back with original timestamp and worker ID
+                # Send processed frame back with original timestamp, worker ID, and frame index
                 worker_id = f"{self.hostname}/{self.gpu_id}"
                 self.push_socket.send_multipart([
                     timestamp_bytes,
                     processed_frame.tobytes(),
-                    worker_id.encode()
+                    worker_id.encode(),
+                    frame_index_bytes
                 ])
             
         except zmq.Again:

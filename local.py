@@ -11,12 +11,14 @@ from queue import Queue, Empty, Full
 from trace_logger import TraceLogger
 import re
 import pygame  # Add pygame import
+from collections import OrderedDict
 
 # Constants
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
 QUEUE_SIZE = 2
+FRAME_LATENCY_MS = 500  # 500ms latency for frame ordering - adjust this value as needed
 
 # OpenGL configuration for antialiasing and alpha blending
 config = pyglet.gl.Config(
@@ -35,6 +37,16 @@ class WebcamApp:
         self.logger = TraceLogger("local", "webcam_display")
         self.frame_count = 0
         self.last_fps_time = time.time()
+        
+        # Initialize input frame rate tracking
+        self.input_frame_count = 0
+        self.last_input_fps_time = time.time()
+        
+        # Initialize frame ordering
+        self.frame_index = 0
+        self.frame_buffer = OrderedDict()  # frame_index -> (timestamp, texture)
+        self.last_display_time = time.time()
+        self.display_interval = None  # Will be set after loading settings
         
         # Initialize settings
         self.settings_file = 'settings.json'
@@ -130,9 +142,11 @@ class WebcamApp:
     def load_settings(self):
         with open(self.settings_file, 'r') as f:
             settings = json.load(f)
-            self.camera_fps = settings.get("camera_fps", 20)
+            self.camera_fps = settings.get("camera_fps", 15)
             self.prompt_cycle_time = settings.get("prompt_cycle_time", 10)
             self.settings_show_processed = settings.get("show_processed", False)
+            # Set display interval to match camera FPS
+            self.display_interval = 1.0 / self.camera_fps
 
     def check_settings(self, dt):
         try:
@@ -142,6 +156,8 @@ class WebcamApp:
                 if settings_mtime > self.last_settings_mtime:
                     self.last_settings_mtime = settings_mtime
                     self.load_settings()
+                    # Update display interval when settings change
+                    self.display_interval = 1.0 / self.camera_fps
             except OSError:
                 pass
 
@@ -173,7 +189,7 @@ class WebcamApp:
 
     def capture_loop(self):
         cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
         cap.set(cv2.CAP_PROP_FPS, self.camera_fps)
@@ -187,6 +203,15 @@ class WebcamApp:
                 if not ret:
                     time.sleep(0.01)
                     continue
+
+                # Track input frame rate
+                self.input_frame_count += 1
+                current_time = time.time()
+                if current_time - self.last_input_fps_time >= 1.0:
+                    input_fps = self.input_frame_count / (current_time - self.last_input_fps_time)
+                    print(f"Camera FPS: {input_fps:.2f}")
+                    self.input_frame_count = 0
+                    self.last_input_fps_time = current_time
 
                 # Crop and convert frame
                 h, w = frame.shape[:2]
@@ -210,45 +235,80 @@ class WebcamApp:
                         self.distribute_socket.send_multipart([
                             str(current_time).encode(),
                             frame_float.tobytes(),
-                            self.get_current_prompt().encode()
+                            self.get_current_prompt().encode(),
+                            str(self.frame_index).encode()  # Add frame index
                         ], flags=zmq.DONTWAIT)
                         last_send_time = current_time
+                        self.frame_index += 1
                     except zmq.Again:
                         pass
         finally:
             cap.release()
 
     def update_frame(self, dt):
+        current_time = time.time()
+        
+        # Check if it's time to display a frame
+        if current_time - self.last_display_time < self.display_interval:
+            return
+        
         # Try to receive processed frame from workers (non-blocking)
         try:
             multipart_msg = self.collect_socket.recv_multipart(flags=zmq.NOBLOCK)
-            if len(multipart_msg) == 3:
-                timestamp_str, frame_data, worker_id_bytes = multipart_msg
+            if len(multipart_msg) == 4:  # Now expecting 4 parts including frame index
+                timestamp_str, frame_data, worker_id_bytes, frame_index_bytes = multipart_msg
                 timestamp = float(timestamp_str.decode())
                 worker_id = worker_id_bytes.decode()
-                print(f"{worker_id} @{timestamp % 10:0.3f}")
+                frame_index = int(frame_index_bytes.decode())
                 
-                processed_frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
-                
-                # Update processed texture directly
-                image = pyglet.image.ImageData(
-                    TARGET_SIZE, TARGET_SIZE,
-                    'RGB', processed_frame.tobytes(),
-                    pitch=TARGET_SIZE * 3
-                )
-                
-                if self.processed_texture is None:
-                    self.processed_texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
+                # Check if frame arrived within latency window
+                frame_age = current_time - timestamp
+                if frame_age <= FRAME_LATENCY_MS / 1000.0:
+                    processed_frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
+                    
+                    # Create texture for this frame
+                    image = pyglet.image.ImageData(
+                        TARGET_SIZE, TARGET_SIZE,
+                        'RGB', processed_frame.tobytes(),
+                        pitch=TARGET_SIZE * 3
+                    )
+                    texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
+                    
+                    # Store frame in buffer
+                    self.frame_buffer[frame_index] = (timestamp, texture)
                 else:
-                    self.processed_texture.blit_into(image, 0, 0, 0)
+                    print(f"Dropped frame {frame_index} - too old ({frame_age*1000:.1f}ms)")
+                    
         except zmq.Again:
-            # No message available, continue with normal frame update
+            # No message available
             pass
-        except Exception:
+        except Exception as e:
             # Handle any other exceptions silently
             pass
         
-        # Update current frame texture
+        # Find the next frame to display (in order)
+        next_frame_index = None
+        if self.frame_buffer:
+            # Get the next expected frame index
+            expected_frame = min(self.frame_buffer.keys())
+            if expected_frame in self.frame_buffer:
+                next_frame_index = expected_frame
+        
+        if next_frame_index is not None:
+            # Display the frame
+            timestamp, texture = self.frame_buffer.pop(next_frame_index)
+            self.processed_texture = texture
+            self.last_display_time = current_time
+        else:
+            # No frame ready, check if we should drop frames
+            if self.frame_buffer:
+                oldest_frame = min(self.frame_buffer.keys())
+                oldest_timestamp = self.frame_buffer[oldest_frame][0]
+                if current_time - oldest_timestamp > FRAME_LATENCY_MS / 1000.0:
+                    dropped_frame = self.frame_buffer.pop(oldest_frame)
+                    print(f"Dropped frame {oldest_frame} - exceeded latency window")
+        
+        # Update current frame texture (for unprocessed view)
         texture_to_update = self.current_texture
         data_queue = self.frame_queue
             
@@ -279,7 +339,7 @@ class WebcamApp:
         if current_time - self.last_fps_time >= 1.0:
             fps = self.frame_count / (current_time - self.last_fps_time)
             # if fps < 30:
-            print(f"FPS: {fps:.2f}")
+            print(f"Display FPS: {fps:.2f}")
             self.frame_count = 0
             self.last_fps_time = current_time
             
