@@ -34,7 +34,15 @@ config = pyglet.gl.Config(
 
 class WebcamApp:
     def __init__(self):
-        pygame.mixer.init()
+        for attempt in range(3):
+            try:
+                pygame.mixer.init()
+                break
+            except pygame.error:
+                print("Failed to initialize pygame mixer. Retrying...")
+                time.sleep(1)
+                
+        print("Successfully initialized pygame mixer")
         
         # Initialize logger and debug counters
         self.logger = TraceLogger("local", "webcam_display")
@@ -142,12 +150,14 @@ class WebcamApp:
     def get_current_prompt(self):
         current_time = time.time()
         if self.last_prompt_change is None or current_time - self.last_prompt_change >= self.prompt_cycle_time:
-            self.current_prompt_idx = (self.current_prompt_idx + 1) % len(self.prompts)
+            n = len(self.prompts)
+            self.current_prompt_idx = (self.current_prompt_idx + 1) % n
             self.last_prompt_change = current_time
             
             # Play corresponding audio file when prompt changes
             try:
-                audio_file = f"audio/{self.current_prompt_idx:02d}.wav"
+                audio_idx = self.current_prompt_idx % (n // 2)
+                audio_file = f"audio/{audio_idx:02d}.wav"
                 if os.path.exists(audio_file):
                     pygame.mixer.music.stop()
                     pygame.mixer.music.load(audio_file)
