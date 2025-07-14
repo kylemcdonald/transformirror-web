@@ -1,4 +1,3 @@
-import pyglet
 from pyglet.gl import *
 import threading
 import time
@@ -8,6 +7,10 @@ import json
 import signal
 import sys
 import subprocess
+import pyglet
+import pygame  # Add pygame import
+from diffusion_processor import DiffusionProcessor
+from PIL import Image
 
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
@@ -32,11 +35,28 @@ class WebcamApp:
         self.last_settings_mtime = 0
         self.load_settings()
         
+        self.processor = DiffusionProcessor(local_files_only=True, gpu_id=0, use_compel=True)
+        
         self.shutdown = threading.Event()
         self.frame_buffer = None
         self.frame_lock = threading.Lock()
         self.texture_needs_update = False
         self.ffmpeg_pipe = None
+        
+        # Initialize pygame mixer for audio
+        for attempt in range(3):
+            try:
+                pygame.mixer.init()
+                break
+            except pygame.error:
+                print("Failed to initialize pygame mixer. Retrying...", flush=True)
+                time.sleep(1)
+        print("Successfully initialized pygame mixer", flush=True)
+        
+        # Load prompts and initialize prompt state
+        self.prompts = self.load_prompts()
+        self.current_prompt_idx = 0
+        self.last_prompt_change = None
         
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
@@ -68,6 +88,7 @@ class WebcamApp:
             with open(self.settings_file, 'r') as f:
                 settings = json.load(f)
                 self.camera_fps = settings.get("camera_fps", 20)
+                self.prompt_cycle_time = settings.get("prompt_cycle_time", 10)
         except FileNotFoundError:
             print(f"Error: Settings file '{self.settings_file}' not found.")
             print("This script requires a settings file to control its behavior.")
@@ -76,6 +97,34 @@ class WebcamApp:
             print(f"Error: Invalid settings file '{self.settings_file}': {e}")
             print("Please check the JSON format and required fields.")
             sys.exit(1)
+
+    def load_prompts(self):
+        try:
+            with open('prompts.txt', 'r') as f:
+                return [line.strip() for line in f if line.strip()]
+        except FileNotFoundError:
+            return ["A beautiful portrait"]
+
+    def get_current_prompt(self):
+        current_time = time.time()
+        if self.last_prompt_change is None or current_time - self.last_prompt_change >= self.prompt_cycle_time:
+            n = len(self.prompts)
+            self.current_prompt_idx = (self.current_prompt_idx + 1) % n
+            self.last_prompt_change = current_time
+            
+            # Play corresponding audio file when prompt changes
+            try:
+                audio_idx = self.current_prompt_idx % (n // 2)
+                audio_file = f"audio/{audio_idx:02d}.wav"
+                if os.path.exists(audio_file):
+                    pygame.mixer.music.stop()
+                    pygame.mixer.music.load(audio_file)
+                    pygame.mixer.music.play()
+                print(f"Playing audio: {audio_file} ({self.current_prompt_idx} of {n})", flush=True)
+            except Exception as e:
+                print(f"Error playing audio: {str(e)}", flush=True)
+            
+        return self.prompts[self.current_prompt_idx]
 
     def check_settings(self, dt):
         try:
@@ -156,8 +205,16 @@ class WebcamApp:
                     print(f"Error reshaping frame data: {e}")
                     continue
                 
+                try:                    
+                    frame = np.float32(frame) / 255.0
+                    processed_frame = self.processor([frame], self.get_current_prompt())
+                    processed_frame = np.uint8(processed_frame[0] * 255)
+                except Exception as e:
+                    print(f"Error processing frame: {e}")
+                    continue
+                
                 with self.frame_lock:
-                    self.frame_buffer = frame.copy()
+                    self.frame_buffer = processed_frame.copy()
                     self.texture_needs_update = True
                 
                 self.display_frame_count += 1
@@ -246,6 +303,12 @@ class WebcamApp:
                     print("Warning: Capture thread did not finish gracefully")
             
             self.cleanup_ffmpeg_pipe()
+            
+            # Clean up pygame
+            try:
+                pygame.mixer.quit()
+            except Exception as e:
+                print(f"Error cleaning up pygame: {e}")
             
             if hasattr(self, 'current_texture') and self.current_texture:
                 try:

@@ -123,6 +123,12 @@ class DiffusionProcessor:
         return cond, pool
     
     def run(self, images, prompt, num_inference_steps, strength, seed=None):
+        """
+        Input and output images are in the format:
+        - range [0, 1] 
+        - dtype float32 
+        - shape [H, W, 3]
+        """
         with torch.cuda.device(self.device):
             strength = min(max(1 / num_inference_steps, strength), 1)
             if seed is not None:
