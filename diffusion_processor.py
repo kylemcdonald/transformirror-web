@@ -153,11 +153,15 @@ class DiffusionProcessor:
     def __call__(self, imgs, prompt):
         start_time = time.time()
         
+        prompt_utf8 = prompt
+        if isinstance(prompt, bytes):
+            prompt_utf8 = prompt.decode("utf-8")
+        
         # Run inference on single image
         filtered_img = self.run(
             images=imgs,  # imgs is a list with one image
             seed=0,
-            prompt=prompt.decode("utf-8"),
+            prompt=prompt_utf8,
             num_inference_steps=2,
             strength=0.7
         )
