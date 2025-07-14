@@ -21,6 +21,7 @@ CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
 QUEUE_SIZE = 4
 FRAME_LATENCY_MS = 1000  # latency for frame ordering - adjust this value as needed
+DEBUG_FRAME_PRINTS = False  # Set to True to enable frame-related debug prints
 
 # OpenGL configuration for antialiasing and alpha blending
 config = pyglet.gl.Config(
@@ -268,10 +269,12 @@ class WebcamApp:
                         self.get_current_prompt().encode(),
                         str(self.input_frame_count).encode()
                     ], flags=zmq.DONTWAIT)
-                    # print(f"frame {self.input_frame_count}: sent to workers")
+                    if DEBUG_FRAME_PRINTS:
+                        print(f"frame {self.input_frame_count}: sent to workers")
                 except zmq.Again:
                     self.frame_buffer[self.input_frame_count] = "dropped"
-                    print(f"frame {self.input_frame_count}: dropped, distribute_socket ZMQ buffer full")
+                    if DEBUG_FRAME_PRINTS:
+                        print(f"frame {self.input_frame_count}: dropped, distribute_socket ZMQ buffer full")
                     pass
                 
                 # Track input frame rate
@@ -299,7 +302,8 @@ class WebcamApp:
                 frame_index = int(frame_index_bytes.decode())
                 processed_frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
                 self.frame_buffer[frame_index] = (timestamp, processed_frame)
-                # print(f"frame {frame_index}: received from worker {worker_id}")
+                if DEBUG_FRAME_PRINTS:
+                    print(f"frame {frame_index}: received from worker {worker_id}")
                 
                 frame_age = current_time - timestamp
                 worker_id_number = 1 if 'transformirror1' in worker_id else 2
@@ -323,17 +327,20 @@ class WebcamApp:
             # Check if frame is within latency window
             if frame_age <= FRAME_LATENCY_MS / 1000.0:
                 del self.frame_buffer[self.output_frame_count]
-                # print(f"frame {self.output_frame_count}: creating texture (age: {frame_age*1000:.1f}ms)")
+                if DEBUG_FRAME_PRINTS:
+                    print(f"frame {self.output_frame_count}: creating texture (age: {frame_age*1000:.1f}ms)", flush=True)
                 self.output_frame_count += 1
                 break
             else:
                 # Frame is too old, skip it and try the next one
-                # print(f"frame {self.output_frame_count}: too old ({frame_age*1000:.1f}ms), skipping")
+                if DEBUG_FRAME_PRINTS:
+                    print(f"frame {self.output_frame_count}: too old ({frame_age*1000:.1f}ms), skipping", flush=True)
                 del self.frame_buffer[self.output_frame_count]
                 self.output_frame_count += 1
         else:
             # No frames available in buffer
-            # print(f"frame {self.output_frame_count}: not ready in frame buffer")
+            if DEBUG_FRAME_PRINTS:
+                print(f"frame {self.output_frame_count}: not ready in frame buffer")
             return
         
         # Create texture from frame data
