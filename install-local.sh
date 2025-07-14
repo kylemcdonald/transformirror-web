@@ -18,7 +18,12 @@ After=graphical-session.target
 WorkingDirectory=$(pwd)
 ExecStart=$(pwd)/run-local.sh
 User=$USER
+Group=$USER
 Restart=always
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/$USER/.Xauthority
+Environment=PULSE_RUNTIME_PATH=/run/user/$(id -u $USER)/pulse
+Environment=XDG_RUNTIME_DIR=/run/user/$(id -u $USER)
 [Install]
 WantedBy=multi-user.target
 EOL

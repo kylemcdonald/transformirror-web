@@ -15,4 +15,4 @@ DISPLAY=$CURRENT_DISPLAY \
     __GL_SHOW_GRAPHICS_OSD=0 \
     __GL_SHOW_DEBUG=0 \
     __GL_DEBUG=0 \
-    $HOME/anaconda3/envs/transformirror/bin/python local.py
+    $HOME/anaconda3/envs/transformirror/bin/python local_direct.py

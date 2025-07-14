@@ -9,7 +9,6 @@ import json
 import signal
 import sys
 
-from trace_logger import TraceLogger
 import re
 import pygame  # Add pygame import
 from collections import OrderedDict
@@ -20,7 +19,7 @@ CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
 QUEUE_SIZE = 4
-FRAME_LATENCY_MS = 1000  # latency for frame ordering - adjust this value as needed
+FRAME_LATENCY_MS = 400  # latency for frame ordering - adjust this value as needed
 DEBUG_FRAME_PRINTS = False  # Set to True to enable frame-related debug prints
 
 # OpenGL configuration for antialiasing and alpha blending
@@ -39,13 +38,12 @@ class WebcamApp:
                 pygame.mixer.init()
                 break
             except pygame.error:
-                print("Failed to initialize pygame mixer. Retrying...")
+                print("Failed to initialize pygame mixer. Retrying...", flush=True)
                 time.sleep(1)
                 
-        print("Successfully initialized pygame mixer")
+        print("Successfully initialized pygame mixer", flush=True)
         
-        # Initialize logger and debug counters
-        self.logger = TraceLogger("local", "webcam_display")
+        # Initialize logger and debug counters=
         self.frame_count = 0
         self.last_fps_time = time.time()
         
@@ -162,8 +160,9 @@ class WebcamApp:
                     pygame.mixer.music.stop()
                     pygame.mixer.music.load(audio_file)
                     pygame.mixer.music.play()
+                print(f"Playing audio: {audio_file} ({self.current_prompt_idx} of {n})", flush=True)
             except Exception as e:
-                self.logger.error(f"Error playing audio: {str(e)}")
+                print(f"Error playing audio: {str(e)}", flush=True)
             
         return self.prompts[self.current_prompt_idx]
 
@@ -198,7 +197,7 @@ class WebcamApp:
             #     pass
 
         except Exception as e:
-            self.logger.error(f"Error in check_settings: {str(e)}")
+            print(f"Error in check_settings: {str(e)}")
 
     def setup_ffmpeg_pipe(self):
         """Setup FFmpeg pipe for webcam capture with cropping"""
@@ -317,8 +316,8 @@ class WebcamApp:
                 
                 frame_age = current_time - timestamp
                 worker_id_number = 1 if 'transformirror1' in worker_id else 2
-                # with open('frame_age.csv', 'a') as f:
-                #     f.write(f"{worker_id_number},{frame_age*1000:.0f}\n")
+                with open('frame_age.csv', 'a') as f:
+                    f.write(f"{worker_id_number},{frame_age*1000:.0f}\n")
                 
         except zmq.Again:
             # No message available
