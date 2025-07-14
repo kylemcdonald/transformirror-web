@@ -4,7 +4,7 @@ SERVICE_NAME="transformirror workers"
 USER=$(whoami)
 SERVICES_DIR=/etc/systemd/system/
 
-sudo cat >$SERVICES_DIR/$SERVICE_ID.service <<EOL
+sudo tee "$SERVICES_DIR/$SERVICE_ID.service" > /dev/null <<EOL
 [Unit]
 Description=$SERVICE_NAME
 Wants=network-online.target
