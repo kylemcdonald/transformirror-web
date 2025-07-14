@@ -9,7 +9,7 @@ from diffusion_processor import DiffusionProcessor as Processor
 import sys
 import argparse
 
-maximum_delay = 1
+# maximum_delay = 1
 
 class Worker:
     def __init__(self, gpu_id: int = 0, host: str = "transformirror1.local"):
@@ -50,8 +50,8 @@ class Worker:
             frame_index = frame_index_bytes.decode()
             
             # Check frame for delay
-            if not self.check_frame_delay(timestamp):
-                return
+            # if not self.check_frame_delay(timestamp):
+            #     return
             
             # Process frame through pipeline
             with self.logger.event_scope("preprocess_frame"):
@@ -79,13 +79,13 @@ class Worker:
             print(f"Error processing frame: {e}")
             return
     
-    def check_frame_delay(self, timestamp):
-        delay = time.time() - float(timestamp)
-        if delay > maximum_delay:
-            self.logger.instantEvent(f"frame_dropped_processing_delay", timestamp)
-            print(f"dropping frame: {1000*delay:.1f}ms late")
-            return False
-        return True
+    # def check_frame_delay(self, timestamp):
+    #     delay = time.time() - float(timestamp)
+    #     if delay > maximum_delay:
+    #         self.logger.instantEvent(f"frame_dropped_processing_delay", timestamp)
+    #         print(f"dropping frame: {1000*delay:.1f}ms late")
+    #         return False
+    #     return True
     
     def preprocess_image(self, frame_data):
         img = np.frombuffer(frame_data, dtype=np.float32).reshape(1024, 1024, 3)
