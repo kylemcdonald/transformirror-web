@@ -171,7 +171,7 @@ class DiffusionProcessor:
             mean_duration = np.mean(self.call_durations)
             min_duration = np.min(self.call_durations)
             max_duration = np.max(self.call_durations)
-            print(f"diffusion mean: {mean_duration:.1f}ms, min: {min_duration:.1f}ms, max: {max_duration:.1f}ms")
+            print(f"diffusion mean: {mean_duration:.1f}ms, min: {min_duration:.1f}ms, max: {max_duration:.1f}ms", flush=True)
             self.call_durations.clear()
             self.last_print_time = current_time
         

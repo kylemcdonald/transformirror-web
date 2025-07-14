@@ -102,7 +102,7 @@ def collect_loop(app):
             
             # Drop frames older than our most recent processed frame
             if timestamp <= recent_timestamp:
-                print(f"dropping out-of-order frame: {1000*(recent_timestamp - timestamp):.1f}ms late")
+                print(f"dropping out-of-order frame: {1000*(recent_timestamp - timestamp):.1f}ms late", flush=True)
                 continue
                 
             # Add frame to priority queue
