@@ -29,7 +29,15 @@ config = pyglet.gl.Config(
 
 class WebcamApp:
     def __init__(self):
-        pygame.mixer.init()
+        for attempt in range(3):
+            try:
+                pygame.mixer.init()
+                break
+            except pygame.error:
+                print("Failed to initialize pygame mixer. Retrying...")
+                time.sleep(1)
+                
+        print("Successfully initialized pygame mixer")
         
         # Initialize logger and debug counters
         self.logger = TraceLogger("local", "webcam_display")
