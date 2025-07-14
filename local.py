@@ -270,6 +270,7 @@ class WebcamApp:
                     ], flags=zmq.DONTWAIT)
                     # print(f"frame {self.input_frame_count}: sent to workers")
                 except zmq.Again:
+                    self.frame_buffer[self.input_frame_count] = "dropped"
                     print(f"frame {self.input_frame_count}: dropped, distribute_socket ZMQ buffer full")
                     pass
                 
@@ -301,8 +302,9 @@ class WebcamApp:
                 # print(f"frame {frame_index}: received from worker {worker_id}")
                 
                 frame_age = current_time - timestamp
-                with open('frame_age.csv', 'a') as f:
-                    f.write(f"{frame_age*1000:.0f}\n")
+                worker_id_number = 1 if 'transformirror1' in worker_id else 2
+                # with open('frame_age.csv', 'a') as f:
+                #     f.write(f"{worker_id_number},{frame_age*1000:.0f}\n")
                 
         except zmq.Again:
             # No message available
@@ -310,6 +312,11 @@ class WebcamApp:
     
         # Check if current frame is available and not too old
         while self.output_frame_count in self.frame_buffer:
+            if self.frame_buffer[self.output_frame_count] == "dropped":
+                del self.frame_buffer[self.output_frame_count]
+                self.output_frame_count += 1
+                continue
+            
             timestamp, frame_data = self.frame_buffer[self.output_frame_count]
             frame_age = current_time - timestamp
             
@@ -357,8 +364,8 @@ class WebcamApp:
         
         if self.current_processed_timestamp is not None:
             processed_age = current_time - self.current_processed_timestamp
-            with open('processed_age.csv', 'a') as f:
-                f.write(f"{processed_age*1000:.0f}\n")
+            # with open('processed_age.csv', 'a') as f:
+            #     f.write(f"{processed_age*1000:.0f}\n")
                 
             # with open('output_timing.csv', 'a') as f:
             #     f.write(f"{current_time:0.3f},{self.current_processed_timestamp:0.3f}\n")
