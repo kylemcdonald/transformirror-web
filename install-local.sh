@@ -9,6 +9,8 @@ sudo cat >$SERVICES_DIR/$SERVICE_ID.service <<EOL
 Description=$SERVICE_NAME
 Wants=network-online.target
 After=network-online.target
+Wants=graphical-session.target
+After=graphical-session.target
 [Service]
 WorkingDirectory=$(pwd)
 ExecStart=$(pwd)/run-local.sh
