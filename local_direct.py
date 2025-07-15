@@ -15,6 +15,7 @@ from PIL import Image
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 1024
+RECONNECT_DELAY = 1.0  # seconds between reconnection attempts
 
 config = pyglet.gl.Config(
     double_buffer=True,
@@ -42,6 +43,8 @@ class WebcamApp:
         self.frame_lock = threading.Lock()
         self.texture_needs_update = False
         self.ffmpeg_pipe = None
+        self.reconnect_event = threading.Event()
+        self.is_connected = False
         
         # Initialize pygame mixer for audio
         for attempt in range(3):
@@ -138,7 +141,15 @@ class WebcamApp:
         except Exception as e:
             print(f"Error in check_settings: {str(e)}")
 
+    def check_webcam_available(self):
+        """Check if /dev/video0 exists and is accessible"""
+        return os.path.exists('/dev/video0')
+
     def setup_ffmpeg_pipe(self):
+        if not self.check_webcam_available():
+            print("Webcam device /dev/video0 not found")
+            return False
+            
         crop_x = (CAPTURE_WIDTH - TARGET_SIZE) // 2
         crop_y = (CAPTURE_HEIGHT - TARGET_SIZE) // 2
         
@@ -157,16 +168,14 @@ class WebcamApp:
                 stderr=subprocess.DEVNULL
             )
             print(f"FFmpeg pipe started: {ffmpeg_cmd}")
+            self.is_connected = True
+            return True
         except FileNotFoundError:
             print("Error: ffmpeg not found. Please install ffmpeg.")
-            self.shutdown.set()
             return False
         except Exception as e:
             print(f"Error starting FFmpeg pipe: {e}")
-            self.shutdown.set()
             return False
-        
-        return True
 
     def cleanup_ffmpeg_pipe(self):
         if self.ffmpeg_pipe:
@@ -182,47 +191,97 @@ class WebcamApp:
                 finally:
                     self.ffmpeg_pipe.stdout.close()
                     self.ffmpeg_pipe = None
+                    self.is_connected = False
                     print("FFmpeg process cleaned up successfully")
             except Exception as e:
                 print(f"Error during FFmpeg cleanup: {e}")
 
+    def attempt_reconnection(self):
+        """Attempt to reconnect to the webcam"""
+        print("Attempting to reconnect to webcam...")
+        
+        # Clean up existing pipe
+        self.cleanup_ffmpeg_pipe()
+        
+        # Wait a bit before attempting reconnection
+        time.sleep(RECONNECT_DELAY)
+        
+        # Try to reconnect
+        if self.setup_ffmpeg_pipe():
+            print("Successfully reconnected to webcam")
+            return True
+        else:
+            print("Failed to reconnect to webcam")
+            return False
+
     def capture_loop(self):
         if not self.setup_ffmpeg_pipe():
+            print("Initial webcam setup failed")
             return
+        
+        consecutive_failures = 0
         
         try:
             while not self.shutdown.is_set():
-                current_time = time.time()
-            
-                frame_data = self.ffmpeg_pipe.stdout.read(TARGET_SIZE * TARGET_SIZE * 3)
-                if not frame_data:
-                    time.sleep(0.01)
-                    continue
-
+                if not self.is_connected or not self.ffmpeg_pipe:
+                    # Try to reconnect indefinitely
+                    if self.attempt_reconnection():
+                        consecutive_failures = 0
+                    else:
+                        consecutive_failures += 1
+                        time.sleep(RECONNECT_DELAY)
+                        continue
+                
                 try:
-                    frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
-                except ValueError as e:
-                    print(f"Error reshaping frame data: {e}")
+                    frame_data = self.ffmpeg_pipe.stdout.read(TARGET_SIZE * TARGET_SIZE * 3)
+                    if not frame_data:
+                        # Check if process is still alive
+                        if self.ffmpeg_pipe.poll() is not None:
+                            print("FFmpeg process terminated unexpectedly")
+                            self.is_connected = False
+                            consecutive_failures += 1
+                            continue
+                        time.sleep(0.01)
+                        continue
+
+                    # Reset failure counter on successful read
+                    consecutive_failures = 0
+
+                    try:
+                        frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
+                    except ValueError as e:
+                        print(f"Error reshaping frame data: {e}")
+                        continue
+                    
+                    try:                    
+                        frame = np.float32(frame) / 255.0
+                        processed_frame = self.processor([frame], self.get_current_prompt())
+                        processed_frame = np.uint8(processed_frame[0] * 255)
+                    except Exception as e:
+                        print(f"Error processing frame: {e}")
+                        continue
+                    
+                    with self.frame_lock:
+                        self.frame_buffer = processed_frame.copy()
+                        self.texture_needs_update = True
+                    
+                    self.display_frame_count += 1
+                    current_time = time.time()
+                    if current_time - self.last_display_fps_time >= 10.0:
+                        display_fps = self.display_frame_count / (current_time - self.last_display_fps_time)
+                        print(f"Capture FPS: {display_fps:.2f}")
+                        self.display_frame_count = 0
+                        self.last_display_fps_time = current_time
+
+                except (OSError, IOError) as e:
+                    print(f"IO Error in capture loop: {e}")
+                    self.is_connected = False
+                    consecutive_failures += 1
                     continue
-                
-                try:                    
-                    frame = np.float32(frame) / 255.0
-                    processed_frame = self.processor([frame], self.get_current_prompt())
-                    processed_frame = np.uint8(processed_frame[0] * 255)
                 except Exception as e:
-                    print(f"Error processing frame: {e}")
+                    print(f"Error in capture loop: {e}")
+                    consecutive_failures += 1
                     continue
-                
-                with self.frame_lock:
-                    self.frame_buffer = processed_frame.copy()
-                    self.texture_needs_update = True
-                
-                self.display_frame_count += 1
-                if current_time - self.last_display_fps_time >= 10.0:
-                    display_fps = self.display_frame_count / (current_time - self.last_display_fps_time)
-                    print(f"Capture FPS: {display_fps:.2f}")
-                    self.display_frame_count = 0
-                    self.last_display_fps_time = current_time
 
         except Exception as e:
             print(f"Error in capture loop: {e}")
@@ -274,6 +333,18 @@ class WebcamApp:
                     except:
                         pass
                     self.current_texture = None
+            else:
+                # Display connection status when no texture is available
+                if not self.is_connected:
+                    label = pyglet.text.Label(
+                        'Webcam disconnected - attempting to reconnect...',
+                        font_name='Arial',
+                        font_size=16,
+                        x=window_width//2, y=window_height//2,
+                        anchor_x='center', anchor_y='center',
+                        color=(255, 255, 255, 255)
+                    )
+                    label.draw()
                     
         except Exception as e:
             print(f"Error in on_draw: {e}")
