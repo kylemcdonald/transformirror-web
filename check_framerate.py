@@ -6,14 +6,14 @@ from diffusion_processor import DiffusionProcessor
 processor = DiffusionProcessor(local_files_only=False, gpu_id=0)
 
 # Create a random 1024x1024x3 image
-input_image = np.random.rand(1024, 1024, 3).astype(np.float32)
+input_image = np.random.rand(512, 512, 3).astype(np.float32)
 
 try:
     i = 0
     while True:
         start_time = time.time()
         
-        batch_size = 1
+        batch_size = 2
         
         # Perform image-to-image generation
         output_image = processor.run(
