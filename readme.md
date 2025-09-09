@@ -69,6 +69,16 @@ http://localhost:8443/set?prompt=your new prompt here
 
 Replace "your new prompt here" with the desired prompt text.
 
+## Installing with uv
+
+```
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv python install 3.10
+uv init && rm main.py && rm README.md
+uv add -r requirements.txt
+source .venv/bin/activate
+```
+
 ## RunPod
 
 ```

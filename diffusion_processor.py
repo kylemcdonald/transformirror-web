@@ -17,6 +17,14 @@ import warnings
 from compel import Compel, ReturnedEmbeddingsType
 from fixed_size_dict import FixedSizeDict
 
+def is_rtx_5090(gpu_id=0):
+    """Check if the current GPU is an RTX 5090"""
+    try:
+        gpu_name = torch.cuda.get_device_name(gpu_id)
+        return "5090" in gpu_name
+    except:
+        return False
+
 def build_pipe(local_files_only):
     base_model = "stabilityai/sdxl-turbo"
     vae_model = "madebyollin/taesdxl"
@@ -51,10 +59,14 @@ class DiffusionProcessor:
 
             print(f"{self.device}: model loaded")
 
+            # Check if we're using an RTX 5090 GPU
+            is_5090 = is_rtx_5090(gpu_id)
+            if is_5090:
+                print(f"{self.device}: RTX 5090 detected - disabling Xformers and fused linear GEGLU for compatibility")
+            
             config = CompilationConfig.Default()
-            config.enable_xformers = True
-            config.enable_triton = True
-            config.enable_cuda_graph = True
+            config.enable_xformers = not is_5090  # Disable xformers only for RTX 5090
+            config.enable_fused_linear_geglu = not is_5090  # Disable fused linear GEGLU only for RTX 5090
             self.pipe = compile(self.pipe, config=config)
 
             print(f"{self.device}: model compiled")
