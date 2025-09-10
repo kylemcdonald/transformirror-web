@@ -145,6 +145,7 @@
     let currentPromptIndex = 0;
     let promptCycleInterval = null;
     let audioEnabled = false;
+    let autoReloadInterval = null;
 
     async function setup() {
       isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -187,6 +188,22 @@
       } else {
         // Load prompts even when not cycling, for manual prompt submission
         await loadPrompts();
+      }
+
+      // Set up automatic page reload if autoreload parameter is present
+      const autoreloadParam = urlParams.get('autoreload');
+      if (autoreloadParam) {
+        const reloadSeconds = parseInt(autoreloadParam, 10);
+        if (!isNaN(reloadSeconds) && reloadSeconds > 0) {
+          const reloadMilliseconds = reloadSeconds * 1000;
+          autoReloadInterval = setInterval(() => {
+            console.log(`Auto-reloading page after ${reloadSeconds} seconds`);
+            window.location.reload();
+          }, reloadMilliseconds);
+          console.log(`Auto-reload enabled: page will reload every ${reloadSeconds} seconds`);
+        } else {
+          console.warn('Invalid autoreload parameter. Must be a positive number of seconds.');
+        }
       }
     }
 
@@ -255,10 +272,9 @@
           
           // Start prompt cycling if enabled
           if (promptCycle && prompts.length > 0) {
-            // Start with the first prompt
-            sendPrompt(prompts[0]);
-            playAudioForPrompt(0);
-            currentPromptIndex = 0;
+            // Start with the random prompt index that was set when prompts were loaded
+            sendPrompt(prompts[currentPromptIndex]);
+            playAudioForPrompt(currentPromptIndex);
             
             // Set up the cycling interval (30 seconds)
             promptCycleInterval = setInterval(() => {
@@ -445,6 +461,12 @@
         
         prompts = await response.json();
         console.log(`Loaded ${prompts.length} prompts`);
+        
+        // Set promptIndex to a random number between 0 and prompts.length
+        if (prompts.length > 0) {
+          currentPromptIndex = Math.floor(Math.random() * prompts.length);
+          console.log(`Random prompt index set to: ${currentPromptIndex}`);
+        }
       } catch (error) {
         console.error('Error loading prompts:', error);
       }
@@ -459,9 +481,9 @@
         console.log(`Loaded ${prompts.length} prompts for cycling`);
         
         if (prompts.length > 0) {
-          // Don't start immediately - wait for user to click Start button
-          currentPromptIndex = 0;
-          console.log(`Loaded ${prompts.length} prompts for cycling - waiting for user to start`);
+          // Set promptIndex to a random number between 0 and prompts.length
+          currentPromptIndex = Math.floor(Math.random() * prompts.length);
+          console.log(`Loaded ${prompts.length} prompts for cycling - random prompt index set to: ${currentPromptIndex} - waiting for user to start`);
         }
       } catch (error) {
         console.error('Error loading prompts for cycling:', error);
@@ -481,6 +503,10 @@
       if (promptCycleInterval) {
         clearInterval(promptCycleInterval);
         promptCycleInterval = null;
+      }
+      if (autoReloadInterval) {
+        clearInterval(autoReloadInterval);
+        autoReloadInterval = null;
       }
     }
 
