@@ -411,7 +411,9 @@
         return;
       }
 
-      audioElement.src = `/audio/${promptIndex.toString().padStart(2, '0')}.m4a`;
+      const audioFileCount = 20;
+      const audioIndex = promptIndex % audioFileCount;
+      audioElement.src = `/audio/${audioIndex.toString().padStart(2, '0')}.m4a`;
       audioElement.volume = 1.0; // Reset to full volume for actual playback
       
       // Stop any currently playing audio
