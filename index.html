@@ -127,6 +127,7 @@
   </form>
 
   <video id="localVideo" autoplay playsinline muted></video>
+  <audio id="promptAudio" preload="auto"></audio>
 
   <script>
     const quality = 0.5;
@@ -139,6 +140,11 @@
     let videoElement;
     let showLocalVideo = false;
     let autoConnect = false; // Add this line
+    let promptCycle = false;
+    let prompts = [];
+    let currentPromptIndex = 0;
+    let promptCycleInterval = null;
+    let audioEnabled = false;
 
     async function setup() {
       isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -173,6 +179,15 @@
         document.getElementById('controls').style.display = 'none';
         start();
       }
+
+      // Check for prompt cycling
+      promptCycle = urlParams.get('cycle') === 'true';
+      if (promptCycle) {
+        await loadPromptsAndStartCycling();
+      } else {
+        // Load prompts even when not cycling, for manual prompt submission
+        await loadPrompts();
+      }
     }
 
     async function start() {
@@ -199,6 +214,9 @@
             },
         audio: false
       };
+
+      // Audio will be enabled when we first try to play it
+      audioEnabled = true;
 
       try {
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -234,6 +252,23 @@
           document.getElementById('controls').style.display = 'none';
           startTime = Date.now();
           requestVideoFrame();
+          
+          // Start prompt cycling if enabled
+          if (promptCycle && prompts.length > 0) {
+            // Start with the first prompt
+            sendPrompt(prompts[0]);
+            playAudioForPrompt(0);
+            currentPromptIndex = 0;
+            
+            // Set up the cycling interval (30 seconds)
+            promptCycleInterval = setInterval(() => {
+              currentPromptIndex = (currentPromptIndex + 1) % prompts.length;
+              const nextPrompt = prompts[currentPromptIndex];
+              console.log(`Cycling to prompt ${currentPromptIndex + 1}/${prompts.length}: ${nextPrompt}`);
+              sendPrompt(nextPrompt);
+              playAudioForPrompt(currentPromptIndex);
+            }, 30000); // 30 seconds
+          }
         };
 
         ws.onmessage = (event) => {
@@ -357,7 +392,36 @@
       if (event.type === 'keydown' && event.key === 'Enter') {
         event.preventDefault();
         sendPrompt(prompt);
+        
+        // Find the prompt index and play corresponding audio
+        const promptIndex = prompts.findIndex(p => p === prompt);
+        if (promptIndex !== -1) {
+          playAudioForPrompt(promptIndex);
+        }
       }
+    }
+
+    function playAudioForPrompt(promptIndex) {
+      if (!audioEnabled) {
+        return;
+      }
+
+      const audioElement = document.getElementById('promptAudio');
+      if (!audioElement) {
+        return;
+      }
+
+      audioElement.src = `/audio/${promptIndex.toString().padStart(2, '0')}.m4a`;
+      audioElement.volume = 1.0; // Reset to full volume for actual playback
+      
+      // Stop any currently playing audio
+      audioElement.pause();
+      audioElement.currentTime = 0;
+      
+      audioElement.play().catch(error => {
+        // If autoplay fails, disable audio for this session
+        audioEnabled = false;
+      });
     }
 
     function sendPrompt(prompt) {
@@ -372,6 +436,36 @@
       }
     }
 
+    async function loadPrompts() {
+      try {
+        const response = await fetch('/prompts');
+        if (!response.ok) throw new Error('Failed to load prompts');
+        
+        prompts = await response.json();
+        console.log(`Loaded ${prompts.length} prompts`);
+      } catch (error) {
+        console.error('Error loading prompts:', error);
+      }
+    }
+
+    async function loadPromptsAndStartCycling() {
+      try {
+        const response = await fetch('/prompts');
+        if (!response.ok) throw new Error('Failed to load prompts');
+        
+        prompts = await response.json();
+        console.log(`Loaded ${prompts.length} prompts for cycling`);
+        
+        if (prompts.length > 0) {
+          // Don't start immediately - wait for user to click Start button
+          currentPromptIndex = 0;
+          console.log(`Loaded ${prompts.length} prompts for cycling - waiting for user to start`);
+        }
+      } catch (error) {
+        console.error('Error loading prompts for cycling:', error);
+      }
+    }
+
     function cleanup() {
       if (ws) ws.close();
       if (localStream) localStream.getTracks().forEach(track => track.stop());
@@ -381,6 +475,10 @@
         } else {
           cancelAnimationFrame(videoFrameCallbackId);
         }
+      }
+      if (promptCycleInterval) {
+        clearInterval(promptCycleInterval);
+        promptCycleInterval = null;
       }
     }
 

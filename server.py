@@ -12,6 +12,7 @@ import zmq
 import os
 import ssl
 import heapq
+import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
@@ -55,6 +56,25 @@ async def set_parameters(request):
         return web.Response(status=400, text="No valid parameters provided.")
     
     return web.Response(text="\n".join(response))
+
+async def get_prompts(request):
+    try:
+        # Read the prompts.txt file from the data folder
+        prompts_file_path = os.path.join(os.getcwd(), "data", "prompts.txt")
+        
+        with open(prompts_file_path, "r", encoding="utf-8") as f:
+            prompts = [line.strip() for line in f.readlines() if line.strip()]
+        
+        # Return as JSON list
+        return web.json_response(prompts)
+    
+    except FileNotFoundError:
+        logger.error(f"Prompts file not found at {prompts_file_path}")
+        return web.Response(status=404, text="Prompts file not found")
+    except Exception as e:
+        logger.error(f"Error reading prompts file: {e}")
+        return web.Response(status=500, text="Internal server error")
+
 
 def distribute_loop(app):
     incoming_client_frames = app['incoming_client_frames']
@@ -145,6 +165,8 @@ if __name__ == '__main__':
     app.router.add_get('/', index)
     app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/set', set_parameters)
+    app.router.add_get('/prompts', get_prompts)
+    app.router.add_static('/audio', path='data/audio', name='audio')
     app.on_shutdown.append(on_shutdown)
     app.on_startup.append(on_startup)
 
