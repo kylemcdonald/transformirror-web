@@ -263,57 +263,77 @@
         remoteCanvas.height = 1024;
         const remoteCtx = remoteCanvas.getContext('2d');
 
-        ws = new WebSocket(`wss://${window.location.host}/ws`);
+        // Wait for the video element to be ready before establishing WebSocket connection
+        videoElement.addEventListener('loadedmetadata', () => {
+          // Now that the video stream is ready, establish the WebSocket connection
+          ws = new WebSocket(`wss://${window.location.host}/ws`);
 
-        ws.onopen = () => {
-          document.getElementById('controls').style.display = 'none';
-          startTime = Date.now();
-          requestVideoFrame();
-          
-          // Start prompt cycling if enabled
-          if (promptCycle && prompts.length > 0) {
-            // Start with the random prompt index that was set when prompts were loaded
-            sendPrompt(prompts[currentPromptIndex]);
-            playAudioForPrompt(currentPromptIndex);
+          ws.onopen = () => {
+            document.getElementById('controls').style.display = 'none';
+            startTime = Date.now();
+            requestVideoFrame();
             
-            // Set up the cycling interval (30 seconds)
-            promptCycleInterval = setInterval(() => {
-              currentPromptIndex = (currentPromptIndex + 1) % prompts.length;
-              const nextPrompt = prompts[currentPromptIndex];
-              console.log(`Cycling to prompt ${currentPromptIndex + 1}/${prompts.length}: ${nextPrompt}`);
-              sendPrompt(nextPrompt);
+            // Start prompt cycling if enabled
+            if (promptCycle && prompts.length > 0) {
+              // Start with the random prompt index that was set when prompts were loaded
+              sendPrompt(prompts[currentPromptIndex]);
               playAudioForPrompt(currentPromptIndex);
-            }, 30000); // 30 seconds
-          }
-        };
-
-        ws.onmessage = (event) => {
-          const img = new Image();
-          img.onload = () => {
-            remoteCtx.drawImage(img, 0, 0, 1024, 1024);
-            bytesReceived += event.data.size;
-            lastBytesReceived = event.data.size;
-            receiveFrameCount++;
-
-            const frameInfo = { timestamp: Date.now(), bytes: event.data.size };
-            lastThirtyReceiveFrames.push(frameInfo);
-            lastThirtyReceiveBytes.push(event.data.size);
-
-            if (lastThirtyReceiveFrames.length > 30) {
-              lastThirtyReceiveFrames.shift();
-              lastThirtyReceiveBytes.shift();
+              
+              // Set up the cycling interval (30 seconds)
+              promptCycleInterval = setInterval(() => {
+                currentPromptIndex = (currentPromptIndex + 1) % prompts.length;
+                const nextPrompt = prompts[currentPromptIndex];
+                console.log(`Cycling to prompt ${currentPromptIndex + 1}/${prompts.length}: ${nextPrompt}`);
+                sendPrompt(nextPrompt);
+                playAudioForPrompt(currentPromptIndex);
+              }, 30000); // 30 seconds
             }
-
-            URL.revokeObjectURL(img.src);
           };
-          img.src = URL.createObjectURL(new Blob([event.data], { type: 'image/jpeg' }));
-        };
+
+          ws.onmessage = (event) => {
+            const img = new Image();
+            img.onload = () => {
+              remoteCtx.drawImage(img, 0, 0, 1024, 1024);
+              bytesReceived += event.data.size;
+              lastBytesReceived = event.data.size;
+              receiveFrameCount++;
+
+              const frameInfo = { timestamp: Date.now(), bytes: event.data.size };
+              lastThirtyReceiveFrames.push(frameInfo);
+              lastThirtyReceiveBytes.push(event.data.size);
+
+              if (lastThirtyReceiveFrames.length > 30) {
+                lastThirtyReceiveFrames.shift();
+                lastThirtyReceiveBytes.shift();
+              }
+
+              URL.revokeObjectURL(img.src);
+            };
+            img.src = URL.createObjectURL(new Blob([event.data], { type: 'image/jpeg' }));
+          };
+
+          ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            if (!autoConnect) {
+              startButton.textContent = 'Start';
+              startButton.disabled = false;
+              alert('Connection error. Please try again.');
+            }
+          };
+        }, { once: true });
+
       } catch (error) {
         console.error('Error accessing camera:', error);
         if (!autoConnect) {
           startButton.textContent = 'Start';
           startButton.disabled = false;
-          alert('Error accessing camera. Please try again or select a different camera.');
+          if (error.name === 'NotAllowedError') {
+            alert('Camera access denied. Please allow camera access and try again.');
+          } else if (error.name === 'NotFoundError') {
+            alert('No camera found. Please check your camera connection.');
+          } else {
+            alert('Error accessing camera. Please try again or select a different camera.');
+          }
         }
       }
     }
