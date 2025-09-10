@@ -136,6 +136,7 @@
         videoFrameCallbackId, debugInfoVisible = false, isMobile = false, isUsingRearCamera = false;
 
     let lastThirtySendFrames = [], lastThirtyReceiveFrames = [], lastThirtySendBytes = [], lastThirtyReceiveBytes = [];
+    let receiveFrameIntervals = []; // Track intervals between received frames for jitter calculation
     
     let videoElement;
     let showLocalVideo = false;
@@ -298,9 +299,22 @@
               lastBytesReceived = event.data.size;
               receiveFrameCount++;
 
-              const frameInfo = { timestamp: Date.now(), bytes: event.data.size };
+              const currentTime = Date.now();
+              const frameInfo = { timestamp: currentTime, bytes: event.data.size };
               lastThirtyReceiveFrames.push(frameInfo);
               lastThirtyReceiveBytes.push(event.data.size);
+
+              // Calculate frame interval for jitter
+              if (lastThirtyReceiveFrames.length > 1) {
+                const previousFrame = lastThirtyReceiveFrames[lastThirtyReceiveFrames.length - 2];
+                const interval = currentTime - previousFrame.timestamp;
+                receiveFrameIntervals.push(interval);
+                
+                // Keep only last 30 intervals
+                if (receiveFrameIntervals.length > 30) {
+                  receiveFrameIntervals.shift();
+                }
+              }
 
               if (lastThirtyReceiveFrames.length > 30) {
                 lastThirtyReceiveFrames.shift();
@@ -390,6 +404,19 @@
       }, 'image/jpeg', quality);
     }
 
+    function calculateJitter(intervals) {
+      if (intervals.length < 2) return 0;
+      
+      // Calculate mean interval
+      const mean = intervals.reduce((sum, interval) => sum + interval, 0) / intervals.length;
+      
+      // Calculate variance
+      const variance = intervals.reduce((sum, interval) => sum + Math.pow(interval - mean, 2), 0) / intervals.length;
+      
+      // Return standard deviation (jitter) in milliseconds
+      return Math.sqrt(variance);
+    }
+
     function updateDebugInfo() {
       if (!debugInfoVisible) return;
 
@@ -406,11 +433,15 @@
       const receiveFps = (lastThirtyReceiveFrames.length / (receiveTimeRange / 1000)).toFixed(2);
       const receiveBandwidthKbps = ((lastThirtyReceiveBytes.reduce((a, b) => a + b, 0) / 1024) / (receiveTimeRange / 1000)).toFixed();
 
+      // Calculate receive jitter
+      const receiveJitter = calculateJitter(receiveFrameIntervals);
+
       const debugInfo = `
         Send FPS: ${sendFps}
         Receive FPS: ${receiveFps}
         Send Bandwidth: ${sendBandwidthKbps} Kbps
         Receive Bandwidth: ${receiveBandwidthKbps} Kbps
+        Receive Jitter: ${receiveJitter.toFixed(1)} ms
         Last Sent: ${(lastBytesSent / 1024).toFixed()} Kb
         Last Received: ${(lastBytesReceived / 1024).toFixed()} Kb
         Total Sent: ${(bytesSent / (1024 * 1024)).toFixed(2)} MB
