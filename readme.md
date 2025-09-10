@@ -69,25 +69,23 @@ http://localhost:8443/set?prompt=your new prompt here
 
 Replace "your new prompt here" with the desired prompt text.
 
-## Installing with uv
-
-```
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv python install 3.10
-uv init && rm main.py && rm README.md
-uv add -r requirements.txt
-source .venv/bin/activate
-```
-
-## RunPod
+## Installing with uv on RunPod
 
 ```
 mkdir /workspace/.cache
-export HF_HOME=/workspace/.cache
-pip3 install -r requirements.txt
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv python install 3.10
+uv add -r requirements.txt
+source .venv/bin/activate
+
+# install stable-fast from source
+git clone https://github.com/kylemcdonald/stable-fast.git && cd stable-fast
+git submodule update --init --recursive
+uv add wheel build
+uv pip install setuptools
+uv pip install -e . --no-deps --no-build-isolation
+
+# install screen and run
 apt update
-apt install libturbojpeg
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+apt install screen -y
 ```
