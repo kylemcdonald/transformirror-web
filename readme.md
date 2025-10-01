@@ -82,12 +82,13 @@ source .venv/bin/activate
 ## RunPod
 
 ```
-mkdir /workspace/.cache
-export HF_HOME=/workspace/.cache
-pip3 install -r requirements.txt
-apt update
-apt install libturbojpeg
+cd /workspace
+git clone https://github.com/kylemcdonald/transformirror-web.git
+cd transformirror-web
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+export HF_HOME=/workspace/.cache
+python check_framerate.py
+apt install screen
 ```
