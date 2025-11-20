@@ -13,8 +13,9 @@ from diffusion_processor import DiffusionProcessor
 from PIL import Image
 
 CAPTURE_WIDTH = 1920
-CAPTURE_HEIGHT = 768
+CAPTURE_HEIGHT = 1080
 TARGET_SIZE = 768
+CROP_SIZE = 1080
 RECONNECT_DELAY = 1.0  # seconds between reconnection attempts
 
 config = pyglet.gl.Config(
@@ -150,14 +151,15 @@ class WebcamApp:
             print("Webcam device /dev/video0 not found")
             return False
             
-        crop_x = (CAPTURE_WIDTH - TARGET_SIZE) // 2
-        crop_y = (CAPTURE_HEIGHT - TARGET_SIZE) // 2
+        crop_x = (CAPTURE_WIDTH - CROP_SIZE) // 2
+        crop_y = (CAPTURE_HEIGHT - CROP_SIZE) // 2
         
         ffmpeg_cmd = (
             f"ffmpeg -hide_banner -loglevel error "
             f"-f v4l2 -input_format mjpeg -framerate {self.camera_fps} "
             f"-video_size {CAPTURE_WIDTH}x{CAPTURE_HEIGHT} -i /dev/video0 "
-            f"-vf crop={TARGET_SIZE}:{TARGET_SIZE}:{crop_x}:{crop_y} "
+            f"-vf crop={CROP_SIZE}:{CROP_SIZE}:{crop_x}:{crop_y},"
+            f"scale={TARGET_SIZE}:{TARGET_SIZE} "
             "-f rawvideo -pix_fmt bgr24 -"
         )
         
