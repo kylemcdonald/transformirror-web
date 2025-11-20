@@ -13,8 +13,8 @@ from diffusion_processor import DiffusionProcessor
 from PIL import Image
 
 CAPTURE_WIDTH = 1920
-CAPTURE_HEIGHT = 1080
-TARGET_SIZE = 1080
+CAPTURE_HEIGHT = 768
+TARGET_SIZE = 768
 RECONNECT_DELAY = 1.0  # seconds between reconnection attempts
 
 config = pyglet.gl.Config(
@@ -158,7 +158,7 @@ class WebcamApp:
             f"-f v4l2 -input_format mjpeg -framerate {self.camera_fps} "
             f"-video_size {CAPTURE_WIDTH}x{CAPTURE_HEIGHT} -i /dev/video0 "
             f"-vf crop={TARGET_SIZE}:{TARGET_SIZE}:{crop_x}:{crop_y} "
-            "-f rawvideo -pix_fmt rgb24 -"
+            "-f rawvideo -pix_fmt bgr24 -"
         )
         
         try:
@@ -253,10 +253,11 @@ class WebcamApp:
                         print(f"Error reshaping frame data: {e}")
                         continue
                     
-                    try:                    
+                    try:
                         frame = np.float32(frame) / 255.0
-                        processed_frame = self.processor([frame], self.get_current_prompt())
-                        processed_frame = np.uint8(processed_frame[0] * 255)
+                        processed_frame = self.processor(frame, self.get_current_prompt())
+                        processed_frame = np.uint8(processed_frame * 255)
+
                     except Exception as e:
                         print(f"Error processing frame: {e}")
                         continue

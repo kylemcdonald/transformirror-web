@@ -4,9 +4,9 @@ import time
 import sys
 import signal
 
-WIDTH = 1280
-HEIGHT = 720
-FPS = 20
+WIDTH = 1920
+HEIGHT = 1080
+FPS = 30
 NUM_FRAMES = 100
 SKIP_FRAMES = 10
 
