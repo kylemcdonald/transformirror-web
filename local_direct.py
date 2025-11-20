@@ -82,7 +82,20 @@ class WebcamApp:
                 self.window = pyglet.window.Window(fullscreen=True, vsync=True)
             except Exception as e:
                 print(f"Failed to create fullscreen window: {e}")
-                self.window = pyglet.window.Window(width=768, height=768, vsync=True)
+                self.window = pyglet.window.Window(width=1920, height=1080, vsync=True)
+        
+        # Verify window resolution
+        actual_width = self.window.width
+        actual_height = self.window.height
+        expected_width = 1920
+        expected_height = 1080
+        
+        print(f"Window created with resolution: {actual_width}x{actual_height}", flush=True)
+        
+        if actual_width == expected_width and actual_height == expected_height:
+            print(f"Resolution verified: {actual_width}x{actual_height} (correct)", flush=True)
+        else:
+            print(f"WARNING: Expected {expected_width}x{expected_height}, but got {actual_width}x{actual_height}", flush=True)
         
         self.window.event(self.on_draw)
         self.window.event(self.on_key_press)
@@ -328,7 +341,11 @@ class WebcamApp:
             
             if hasattr(self, 'current_texture') and self.current_texture is not None:
                 try:
-                    self.current_texture.blit(0, 0, width=window_width, height=window_height)
+                    # Calculate center position for 768x768 image on 1920x1080 screen
+                    image_x = (window_width - TARGET_SIZE) // 2
+                    image_y = (window_height - TARGET_SIZE) // 2
+                    # Blit at native 768x768 size (pixel-perfect) at center position
+                    self.current_texture.blit(image_x, image_y, width=TARGET_SIZE, height=TARGET_SIZE)
                 except Exception as e:
                     print(f"Error blitting texture: {e}")
                     try:
