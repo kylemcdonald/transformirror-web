@@ -37,7 +37,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-stable-fast = { url = "https://github.com/chengzeyi/stable-fast/releases/download/v0.0.13.post3/stable_fast-0.0.13.post3+torch210cu121-cp310-cp310-manylinux2014_x86_64.whl" }
+stable-fast = { path = "./stable-fast", editable = true }
 pyturbojpeg = { git = "https://github.com/lilohuang/PyTurboJPEG.git" }
 
 [tool.uv.extra-build-dependencies]

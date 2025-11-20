@@ -260,8 +260,8 @@
         videoElement.playsInline = true;
 
         const remoteCanvas = document.getElementById('remoteVideo');
-        remoteCanvas.width = 1024;
-        remoteCanvas.height = 1024;
+        remoteCanvas.width = 768;
+        remoteCanvas.height = 768;
         const remoteCtx = remoteCanvas.getContext('2d');
 
         // Wait for the video element to be ready before establishing WebSocket connection
@@ -294,7 +294,7 @@
           ws.onmessage = (event) => {
             const img = new Image();
             img.onload = () => {
-              remoteCtx.drawImage(img, 0, 0, 1024, 1024);
+              remoteCtx.drawImage(img, 0, 0, 768, 768);
               bytesReceived += event.data.size;
               lastBytesReceived = event.data.size;
               receiveFrameCount++;
@@ -426,12 +426,12 @@
       const sendTimeRange = lastThirtySendFrames.length > 1 ? 
         lastThirtySendFrames[lastThirtySendFrames.length - 1].timestamp - lastThirtySendFrames[0].timestamp : 1000;
       const sendFps = (lastThirtySendFrames.length / (sendTimeRange / 1000)).toFixed(2);
-      const sendBandwidthKbps = ((lastThirtySendBytes.reduce((a, b) => a + b, 0) / 1024) / (sendTimeRange / 1000)).toFixed();
+      const sendBandwidthKbps = ((lastThirtySendBytes.reduce((a, b) => a + b, 0) / 768) / (sendTimeRange / 1000)).toFixed();
 
       const receiveTimeRange = lastThirtyReceiveFrames.length > 1 ? 
         lastThirtyReceiveFrames[lastThirtyReceiveFrames.length - 1].timestamp - lastThirtyReceiveFrames[0].timestamp : 1000;
       const receiveFps = (lastThirtyReceiveFrames.length / (receiveTimeRange / 1000)).toFixed(2);
-      const receiveBandwidthKbps = ((lastThirtyReceiveBytes.reduce((a, b) => a + b, 0) / 1024) / (receiveTimeRange / 1000)).toFixed();
+      const receiveBandwidthKbps = ((lastThirtyReceiveBytes.reduce((a, b) => a + b, 0) / 768) / (receiveTimeRange / 1000)).toFixed();
 
       // Calculate receive jitter
       const receiveJitter = calculateJitter(receiveFrameIntervals);
@@ -442,10 +442,10 @@
         Send Bandwidth: ${sendBandwidthKbps} Kbps
         Receive Bandwidth: ${receiveBandwidthKbps} Kbps
         Receive Jitter: ${receiveJitter.toFixed(1)} ms
-        Last Sent: ${(lastBytesSent / 1024).toFixed()} Kb
-        Last Received: ${(lastBytesReceived / 1024).toFixed()} Kb
-        Total Sent: ${(bytesSent / (1024 * 1024)).toFixed(2)} MB
-        Total Received: ${(bytesReceived / (1024 * 1024)).toFixed(2)} MB
+        Last Sent: ${(lastBytesSent / 768).toFixed()} Kb
+        Last Received: ${(lastBytesReceived / 768).toFixed()} Kb
+        Total Sent: ${(bytesSent / (768 * 768)).toFixed(2)} MB
+        Total Received: ${(bytesReceived / (768 * 768)).toFixed(2)} MB
       `;
 
       document.getElementById('debugInfo').innerText = debugInfo;

@@ -3058,13 +3058,10 @@ wheels = [
 
 [[package]]
 name = "stable-fast"
-version = "0.0.13.post3+torch210cu121"
-source = { url = "https://github.com/chengzeyi/stable-fast/releases/download/v0.0.13.post3/stable_fast-0.0.13.post3+torch210cu121-cp310-cp310-manylinux2014_x86_64.whl" }
+version = "1.0.5"
+source = { editable = "stable-fast" }
 dependencies = [
     { name = "torch" },
-]
-wheels = [
-    { url = "https://github.com/chengzeyi/stable-fast/releases/download/v0.0.13.post3/stable_fast-0.0.13.post3+torch210cu121-cp310-cp310-manylinux2014_x86_64.whl", hash = "sha256:0ea9e99b9b51e798feabbc09045a02850025fa6286b21d21109571732f6e98b3" },
 ]
 
 [package.metadata]
@@ -3080,7 +3077,7 @@ requires-dist = [
     { name = "triton", marker = "extra == 'triton'", specifier = ">=2.1.0" },
     { name = "xformers", marker = "extra == 'xformers'", specifier = ">=0.0.20" },
 ]
-provides-extras = ["all", "dev", "diffusers", "triton", "xformers"]
+provides-extras = ["all", "dev", "diffusers", "xformers", "triton"]
 
 [[package]]
 name = "starlette"
@@ -3408,7 +3405,7 @@ requires-dist = [
     { name = "python-osc", specifier = "==1.8.3" },
     { name = "pyturbojpeg", git = "https://github.com/lilohuang/PyTurboJPEG.git" },
     { name = "pyzmq", specifier = "==25.1.2" },
-    { name = "stable-fast", url = "https://github.com/chengzeyi/stable-fast/releases/download/v0.0.13.post3/stable_fast-0.0.13.post3+torch210cu121-cp310-cp310-manylinux2014_x86_64.whl" },
+    { name = "stable-fast", editable = "stable-fast" },
     { name = "torch", specifier = "==2.1.0" },
     { name = "torchaudio", specifier = ">=2.1.0" },
     { name = "torchvision", specifier = ">=0.16.0" },

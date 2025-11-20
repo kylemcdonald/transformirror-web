@@ -47,7 +47,7 @@ def build_pipe(local_files_only):
     return pipe
 
 class DiffusionProcessor:
-    def __init__(self, warmup="1x1024x1024x3", local_files_only=True, gpu_id=0, use_compel=True):
+    def __init__(self, warmup="1x768x768x3", local_files_only=True, gpu_id=0, use_compel=True):
         warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
 
         self.device = torch.device(f"cuda:{gpu_id}")
@@ -157,7 +157,7 @@ class DiffusionProcessor:
     def __call__(self, img, prompt):
         start_time = time.time()
         
-        img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+        img = cv2.resize(img, (768, 768), interpolation=cv2.INTER_AREA)
 
         img = np.float32(img) / 255
         filtered_img = self.run(
