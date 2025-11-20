@@ -14,8 +14,9 @@ from PIL import Image
 
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
-TARGET_SIZE = 768
 CROP_SIZE = 1080
+INPUT_SIZE = 768
+DISPLAY_SIZE = 704
 RECONNECT_DELAY = 1.0  # seconds between reconnection attempts
 
 config = pyglet.gl.Config(
@@ -172,8 +173,8 @@ class WebcamApp:
             f"-f v4l2 -input_format mjpeg -framerate {self.camera_fps} "
             f"-video_size {CAPTURE_WIDTH}x{CAPTURE_HEIGHT} -i /dev/video0 "
             f"-vf crop={CROP_SIZE}:{CROP_SIZE}:{crop_x}:{crop_y},"
-            f"scale={TARGET_SIZE}:{TARGET_SIZE} "
-            "-f rawvideo -pix_fmt bgr24 -"
+            f"scale={INPUT_SIZE}:{INPUT_SIZE} "
+            "-f rawvideo -pix_fmt rgb24 -"
         )
         
         try:
@@ -248,7 +249,7 @@ class WebcamApp:
                         continue
                 
                 try:
-                    frame_data = self.ffmpeg_pipe.stdout.read(TARGET_SIZE * TARGET_SIZE * 3)
+                    frame_data = self.ffmpeg_pipe.stdout.read(INPUT_SIZE * INPUT_SIZE * 3)
                     if not frame_data:
                         # Check if process is still alive
                         if self.ffmpeg_pipe.poll() is not None:
@@ -263,7 +264,7 @@ class WebcamApp:
                     consecutive_failures = 0
 
                     try:
-                        frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(TARGET_SIZE, TARGET_SIZE, 3)
+                        frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(INPUT_SIZE, INPUT_SIZE, 3)
                     except ValueError as e:
                         print(f"Error reshaping frame data: {e}")
                         continue
@@ -315,6 +316,7 @@ class WebcamApp:
             self.last_fps_time = current_time
             
         try:
+            glClearColor(1.0, 1.0, 1.0, 1.0)  # Set clear color to white (R, G, B, A)
             self.window.clear()
             
             window_width = self.window.width
@@ -324,9 +326,9 @@ class WebcamApp:
                 if self.texture_needs_update and self.frame_buffer is not None:
                     try:
                         image = pyglet.image.ImageData(
-                            TARGET_SIZE, TARGET_SIZE,
+                            INPUT_SIZE, INPUT_SIZE,
                             'RGB', self.frame_buffer.tobytes(),
-                            pitch=TARGET_SIZE * 3
+                            pitch=INPUT_SIZE * 3
                         )
                         texture = image.get_texture().get_transform(flip_y=True, flip_x=True)
                         texture.anchor_x = 0
@@ -342,10 +344,10 @@ class WebcamApp:
             if hasattr(self, 'current_texture') and self.current_texture is not None:
                 try:
                     # Calculate center position for 768x768 image on 1920x1080 screen
-                    image_x = (window_width - TARGET_SIZE) // 2
-                    image_y = (window_height - TARGET_SIZE) // 2
+                    image_x = (window_width - DISPLAY_SIZE) // 2
+                    image_y = (window_height - DISPLAY_SIZE) // 2
                     # Blit at native 768x768 size (pixel-perfect) at center position
-                    self.current_texture.blit(image_x, image_y, width=TARGET_SIZE, height=TARGET_SIZE)
+                    self.current_texture.blit(image_x, image_y, width=DISPLAY_SIZE, height=DISPLAY_SIZE)
                 except Exception as e:
                     print(f"Error blitting texture: {e}")
                     try:
