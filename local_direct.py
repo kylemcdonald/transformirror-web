@@ -85,6 +85,12 @@ class WebcamApp:
                 print(f"Failed to create fullscreen window: {e}")
                 self.window = pyglet.window.Window(width=1920, height=1080, vsync=True)
         
+        # Hide the system cursor so it doesn't distract during display
+        try:
+            self.window.set_mouse_visible(False)
+        except Exception as e:
+            print(f"Warning: Unable to hide cursor: {e}")
+        
         # Verify window resolution
         actual_width = self.window.width
         actual_height = self.window.height
