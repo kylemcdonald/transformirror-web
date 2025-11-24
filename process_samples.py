@@ -74,7 +74,7 @@ def main():
 
         for prompt_index, prompt in enumerate(prompts):
             padded_index = f"{prompt_index:02d}"
-            output_name = f"{image_path.stem}_{padded_index}{image_path.suffix}"
+            output_name = f"{padded_index}_{image_path.stem}{image_path.suffix}"
             output_path = RESULTS_DIR / output_name
 
             print(f"Processing {image_path.name} with prompt #{prompt_index}: {prompt[:60]}...")

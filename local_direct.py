@@ -76,11 +76,41 @@ class WebcamApp:
         pyglet.app.exit()
 
     def setup_window(self):
+        # Select the right-hand display when available
         try:
-            self.window = pyglet.window.Window(fullscreen=True, config=config, vsync=True)
+            display = pyglet.canvas.get_display()
+            screens = display.get_screens()
+            target_screen = None
+            if screens:
+                target_screen = screens[0]
+                # Prefer the screen whose origin sits farthest to the right
+                right_screens = sorted(
+                    screens,
+                    key=lambda s: getattr(s, 'x', 0),
+                    reverse=True
+                )
+                if right_screens:
+                    target_screen = right_screens[0]
+            print(f"Using screen '{getattr(target_screen, 'name', 'unknown')}' at "
+                  f"({getattr(target_screen, 'x', 0)}, {getattr(target_screen, 'y', 0)})", flush=True)
+        except Exception as e:
+            print(f"Warning: Unable to enumerate screens, defaulting to primary display: {e}", flush=True)
+            target_screen = None
+        
+        try:
+            self.window = pyglet.window.Window(
+                fullscreen=True,
+                config=config,
+                vsync=True,
+                screen=target_screen
+            )
         except pyglet.window.NoSuchConfigException:
             try:
-                self.window = pyglet.window.Window(fullscreen=True, vsync=True)
+                self.window = pyglet.window.Window(
+                    fullscreen=True,
+                    vsync=True,
+                    screen=target_screen
+                )
             except Exception as e:
                 print(f"Failed to create fullscreen window: {e}")
                 self.window = pyglet.window.Window(width=1920, height=1080, vsync=True)

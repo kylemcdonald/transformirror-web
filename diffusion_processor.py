@@ -29,7 +29,7 @@ def build_pipe(local_files_only):
     base_model = "stabilityai/sdxl-turbo"
     vae_model = "madebyollin/taesdxl"
 
-    local_files_only = False
+    # local_files_only = False
 
     pipe = AutoPipelineForImage2Image.from_pretrained(
         base_model,
