@@ -3,7 +3,7 @@
 SERVICE_ID=daily-shutdown
 SERVICE_NAME="Daily Scheduled Shutdown"
 SERVICES_DIR=/etc/systemd/system/
-SHUTDOWN_TIME="22:00"
+SHUTDOWN_TIME="22:05"
 
 # --- Create the service ---
 sudo tee "${SERVICES_DIR}/${SERVICE_ID}.service" > /dev/null <<EOL

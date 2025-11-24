@@ -1,3 +1,4 @@
+import io
 from pyglet.gl import *
 import threading
 import time
@@ -11,6 +12,8 @@ import pyglet
 import pygame  # Add pygame import
 from diffusion_processor import DiffusionProcessor
 from PIL import Image
+from flask import Flask, jsonify, request, send_file
+from werkzeug.serving import make_server
 
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
@@ -19,6 +22,10 @@ INPUT_SIZE = 768
 DISPLAY_SIZE = 768
 OVERLAY_SIZE = 768
 RECONNECT_DELAY = 1.0  # seconds between reconnection attempts
+PROMPT_FRONTEND_PATH = os.path.join(os.path.dirname(__file__), "prompt_app_frontend.html")
+PROMPT_SAMPLE_IMAGE = os.path.join(os.path.dirname(__file__), "frames", "sample.jpg")
+PROMPT_SERVER_HOST = "0.0.0.0"
+PROMPT_SERVER_PORT = 5000
 
 config = pyglet.gl.Config(
     double_buffer=True,
@@ -27,6 +34,80 @@ config = pyglet.gl.Config(
     alpha_size=8,
     depth_size=24
 )
+
+
+class PromptServer(threading.Thread):
+    def __init__(self, flask_app, host=PROMPT_SERVER_HOST, port=PROMPT_SERVER_PORT):
+        super().__init__(daemon=True)
+        self.server = make_server(host, port, flask_app)
+        self.context = flask_app.app_context()
+        self.context.push()
+
+    def run(self):
+        self.server.serve_forever()
+
+    def shutdown(self):
+        self.server.shutdown()
+        self.context.pop()
+
+
+def create_prompt_app(webcam_app):
+    app = Flask(__name__)
+    processor = webcam_app.processor
+
+    def load_sample_image():
+        if not os.path.exists(PROMPT_SAMPLE_IMAGE):
+            raise FileNotFoundError(f"Sample image not found at {PROMPT_SAMPLE_IMAGE}")
+        image = Image.open(PROMPT_SAMPLE_IMAGE).convert("RGB")
+        if image.size != (INPUT_SIZE, INPUT_SIZE):
+            image = image.resize((INPUT_SIZE, INPUT_SIZE), Image.LANCZOS)
+        return np.asarray(image, dtype=np.float32) / 255.0
+
+    @app.post("/generate")
+    def generate():
+        payload = request.get_json(force=True, silent=True) or {}
+        prompt = payload.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
+        try:
+            base_image = load_sample_image()
+            processed = processor(base_image, prompt)
+            processed = np.clip(processed, 0.0, 1.0)
+            pil_image = Image.fromarray((processed * 255).astype(np.uint8))
+            buffer = io.BytesIO()
+            pil_image.save(buffer, format="JPEG")
+            buffer.seek(0)
+            return send_file(
+                buffer,
+                mimetype="image/jpeg",
+                as_attachment=False,
+                download_name="result.jpg",
+            )
+        except FileNotFoundError as exc:
+            return jsonify({"error": str(exc)}), 500
+        except Exception as exc:
+            return jsonify({"error": f"Failed to generate image: {exc}"}), 500
+
+    @app.get("/save-state")
+    def get_save_state():
+        return jsonify({"enabled": bool(webcam_app.save_frames_enabled)})
+
+    @app.post("/save-state")
+    def set_save_state():
+        payload = request.get_json(force=True, silent=True) or {}
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            return jsonify({"error": "'enabled' must be a boolean"}), 400
+        webcam_app.save_frames_enabled = enabled
+        return jsonify({"enabled": webcam_app.save_frames_enabled})
+
+    @app.get("/")
+    def index():
+        if not os.path.exists(PROMPT_FRONTEND_PATH):
+            return jsonify({"error": "Frontend file missing"}), 500
+        return send_file(PROMPT_FRONTEND_PATH, mimetype="text/html")
+
+    return app
 
 class WebcamApp:
     def __init__(self):
@@ -42,6 +123,11 @@ class WebcamApp:
         self.processor = DiffusionProcessor(local_files_only=True, gpu_id=0, use_compel=True)
         self.overlay_texture = None
         self.overlay_path = os.path.join(os.path.dirname(__file__), 'overlay.png')
+        self.frames_dir = os.path.join(os.path.dirname(__file__), 'frames')
+        os.makedirs(self.frames_dir, exist_ok=True)
+        self.save_interval = 5.0  # seconds between saved frames
+        self.last_save_time = 0.0
+        self.save_frames_enabled = False
         
         self.shutdown = threading.Event()
         self.frame_buffer = None
@@ -50,6 +136,7 @@ class WebcamApp:
         self.ffmpeg_pipe = None
         self.reconnect_event = threading.Event()
         self.is_connected = False
+        self.prompt_server = None
         
         # Initialize pygame mixer for audio
         for attempt in range(3):
@@ -73,6 +160,7 @@ class WebcamApp:
         self.load_overlay_texture()
         self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
         pyglet.clock.schedule_interval(self.check_settings, 1.0)
+        self.start_prompt_server()
 
     def signal_handler(self, signum, frame):
         print(f"\nReceived signal {signum}, shutting down gracefully...")
@@ -151,6 +239,30 @@ class WebcamApp:
                 return [line.strip() for line in f if line.strip()]
         except FileNotFoundError:
             return ["A beautiful portrait"]
+
+    def start_prompt_server(self):
+        if self.prompt_server is not None:
+            return
+        try:
+            flask_app = create_prompt_app(self)
+            self.prompt_server = PromptServer(flask_app)
+            self.prompt_server.start()
+            address = f"http://{PROMPT_SERVER_HOST}:{PROMPT_SERVER_PORT}"
+            print(f"Prompt server running at {address}", flush=True)
+        except Exception as e:
+            print(f"Failed to start prompt server: {e}", flush=True)
+            self.prompt_server = None
+
+    def stop_prompt_server(self):
+        if not self.prompt_server:
+            return
+        try:
+            self.prompt_server.shutdown()
+            print("Prompt server stopped", flush=True)
+        except Exception as e:
+            print(f"Error stopping prompt server: {e}", flush=True)
+        finally:
+            self.prompt_server = None
 
     def get_current_prompt(self):
         current_time = time.time()
@@ -299,10 +411,12 @@ class WebcamApp:
                         continue
                     
                     try:
+                        raw_frame = frame.copy()
                         frame = np.float32(frame) / 255.0
                         processed_frame = self.processor(frame, self.get_current_prompt())
                         processed_frame = np.uint8(processed_frame * 255)
-
+                        if self.save_frames_enabled:
+                            self.maybe_save_frame(raw_frame)
                     except Exception as e:
                         print(f"Error processing frame: {e}")
                         continue
@@ -419,6 +533,22 @@ class WebcamApp:
             self.shutdown.set()
             pyglet.app.exit()
 
+    def maybe_save_frame(self, frame_array):
+        """Persist a processed frame to disk on the configured interval."""
+        current_time = time.time()
+        if current_time - self.last_save_time < self.save_interval:
+            return
+
+        self.last_save_time = current_time
+        filename = time.strftime("%Y%m%d-%H%M%S")
+        filepath = os.path.join(self.frames_dir, f"{filename}.png")
+
+        try:
+            Image.fromarray(frame_array).save(filepath, format="PNG")
+            print(f"Saved frame to {filepath}", flush=True)
+        except Exception as e:
+            print(f"Error saving frame: {e}", flush=True)
+
     def run(self):
         print("Starting webcam application...")
         self.capture_thread.start()
@@ -439,6 +569,7 @@ class WebcamApp:
                     print("Warning: Capture thread did not finish gracefully")
             
             self.cleanup_ffmpeg_pipe()
+            self.stop_prompt_server()
             
             # Clean up pygame
             try:

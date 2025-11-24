@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Prompt Diffusion Demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            margin: 40px;
+            background: #111;
+            color: #f2f2f2;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 24px;
+        }
+        .panel {
+            width: min(480px, 100%);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        textarea {
+            width: 100%;
+            min-height: 80px;
+            padding: 12px;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #1c1c1c;
+            color: inherit;
+            resize: vertical;
+        }
+        button {
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            background: #4a8cff;
+            color: #fff;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        #preview {
+            width: 768px;
+            height: 768px;
+            max-width: 90vw;
+            max-height: 90vw;
+            border-radius: 12px;
+            object-fit: cover;
+            background: #222;
+        }
+        #status {
+            min-height: 1.2em;
+        }
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .toggle-row label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <h1>Prompt Diffusion Demo</h1>
+    <div class="panel">
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" placeholder="Describe what you want to see..."></textarea>
+        <button id="submitBtn">Generate</button>
+        <div id="status"></div>
+    </div>
+    <div class="panel">
+        <div class="toggle-row">
+            <label>
+                <input type="checkbox" id="saveToggle">
+                Save raw frames to disk
+            </label>
+        </div>
+        <div id="saveStatus"></div>
+    </div>
+    <img id="preview" alt="Generated result will appear here">
+
+    <script>
+        const promptInput = document.getElementById('prompt');
+        const submitBtn = document.getElementById('submitBtn');
+        const statusEl = document.getElementById('status');
+        const previewImg = document.getElementById('preview');
+        const saveToggle = document.getElementById('saveToggle');
+        const saveStatus = document.getElementById('saveStatus');
+
+        async function sendPrompt() {
+            const prompt = promptInput.value.trim();
+            if (!prompt) {
+                statusEl.textContent = 'Please enter a prompt.';
+                return;
+            }
+
+            submitBtn.disabled = true;
+            statusEl.textContent = 'Generating...';
+
+            try {
+                const response = await fetch('/generate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ prompt })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({}));
+                    throw new Error(error.error || 'Generation failed.');
+                }
+
+                const blob = await response.blob();
+                const imageUrl = URL.createObjectURL(blob);
+                previewImg.src = imageUrl;
+                statusEl.textContent = 'Done.';
+            } catch (err) {
+                statusEl.textContent = err.message;
+            } finally {
+                submitBtn.disabled = false;
+            }
+        }
+
+        submitBtn.addEventListener('click', sendPrompt);
+        promptInput.addEventListener('keydown', (event) => {
+            if (event.metaKey || event.ctrlKey) {
+                return;
+            }
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendPrompt();
+            }
+        });
+
+        async function refreshSaveState() {
+            try {
+                const response = await fetch('/save-state');
+                if (!response.ok) {
+                    throw new Error('Failed to fetch save state.');
+                }
+                const data = await response.json();
+                saveToggle.checked = !!data.enabled;
+                saveStatus.textContent = data.enabled ? 'Frame saving is ON.' : 'Frame saving is OFF.';
+            } catch (err) {
+                saveStatus.textContent = err.message;
+            }
+        }
+
+        async function setSaveState(enabled) {
+            saveToggle.disabled = true;
+            saveStatus.textContent = 'Updating...';
+            try {
+                const response = await fetch('/save-state', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ enabled })
+                });
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({}));
+                    throw new Error(error.error || 'Failed to update save state.');
+                }
+                const data = await response.json();
+                saveToggle.checked = !!data.enabled;
+                saveStatus.textContent = data.enabled ? 'Frame saving is ON.' : 'Frame saving is OFF.';
+            } catch (err) {
+                saveStatus.textContent = err.message;
+                saveToggle.checked = !enabled;
+            } finally {
+                saveToggle.disabled = false;
+            }
+        }
+
+        saveToggle.addEventListener('change', () => {
+            setSaveState(saveToggle.checked);
+        });
+
+        refreshSaveState();
+    </script>
+</body>
+</html>
+
