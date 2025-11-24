@@ -16,7 +16,8 @@ CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 CROP_SIZE = 1080
 INPUT_SIZE = 768
-DISPLAY_SIZE = 704
+DISPLAY_SIZE = 768
+OVERLAY_SIZE = 768
 RECONNECT_DELAY = 1.0  # seconds between reconnection attempts
 
 config = pyglet.gl.Config(
@@ -39,6 +40,8 @@ class WebcamApp:
         self.load_settings()
         
         self.processor = DiffusionProcessor(local_files_only=True, gpu_id=0, use_compel=True)
+        self.overlay_texture = None
+        self.overlay_path = os.path.join(os.path.dirname(__file__), 'overlay.png')
         
         self.shutdown = threading.Event()
         self.frame_buffer = None
@@ -67,6 +70,7 @@ class WebcamApp:
         signal.signal(signal.SIGTERM, self.signal_handler)
         
         self.setup_window()
+        self.load_overlay_texture()
         self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
         pyglet.clock.schedule_interval(self.check_settings, 1.0)
 
@@ -76,41 +80,13 @@ class WebcamApp:
         pyglet.app.exit()
 
     def setup_window(self):
-        # Select the right-hand display when available
+        screens = pyglet.display.get_display().get_screens()
+        screen = screens[1]
         try:
-            display = pyglet.canvas.get_display()
-            screens = display.get_screens()
-            target_screen = None
-            if screens:
-                target_screen = screens[0]
-                # Prefer the screen whose origin sits farthest to the right
-                right_screens = sorted(
-                    screens,
-                    key=lambda s: getattr(s, 'x', 0),
-                    reverse=True
-                )
-                if right_screens:
-                    target_screen = right_screens[0]
-            print(f"Using screen '{getattr(target_screen, 'name', 'unknown')}' at "
-                  f"({getattr(target_screen, 'x', 0)}, {getattr(target_screen, 'y', 0)})", flush=True)
-        except Exception as e:
-            print(f"Warning: Unable to enumerate screens, defaulting to primary display: {e}", flush=True)
-            target_screen = None
-        
-        try:
-            self.window = pyglet.window.Window(
-                fullscreen=True,
-                config=config,
-                vsync=True,
-                screen=target_screen
-            )
+            self.window = pyglet.window.Window(fullscreen=True, config=config, vsync=True, display=0, screen=screen)
         except pyglet.window.NoSuchConfigException:
             try:
-                self.window = pyglet.window.Window(
-                    fullscreen=True,
-                    vsync=True,
-                    screen=target_screen
-                )
+                self.window = pyglet.window.Window(fullscreen=True, vsync=True)
             except Exception as e:
                 print(f"Failed to create fullscreen window: {e}")
                 self.window = pyglet.window.Window(width=1920, height=1080, vsync=True)
@@ -134,8 +110,25 @@ class WebcamApp:
         else:
             print(f"WARNING: Expected {expected_width}x{expected_height}, but got {actual_width}x{actual_height}", flush=True)
         
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        
         self.window.event(self.on_draw)
         self.window.event(self.on_key_press)
+
+    def load_overlay_texture(self):
+        try:
+            if not os.path.exists(self.overlay_path):
+                print(f"Overlay file not found at {self.overlay_path}")
+                return
+            overlay_image = pyglet.image.load(self.overlay_path)
+            self.overlay_texture = overlay_image.get_texture()
+            self.overlay_texture.anchor_x = 0
+            self.overlay_texture.anchor_y = 0
+            print("Overlay texture loaded successfully")
+        except Exception as e:
+            print(f"Error loading overlay texture: {e}")
+            self.overlay_texture = None
 
     def load_settings(self):
         try:
@@ -403,6 +396,20 @@ class WebcamApp:
                         color=(255, 255, 255, 255)
                     )
                     label.draw()
+            
+            if self.overlay_texture is not None:
+                try:
+                    overlay_x = (window_width - OVERLAY_SIZE) // 2
+                    overlay_y = (window_height - OVERLAY_SIZE) // 2
+                    self.overlay_texture.blit(
+                        overlay_x,
+                        overlay_y,
+                        width=OVERLAY_SIZE,
+                        height=OVERLAY_SIZE
+                    )
+                except Exception as e:
+                    print(f"Error drawing overlay: {e}")
+                    self.overlay_texture = None
                     
         except Exception as e:
             print(f"Error in on_draw: {e}")
