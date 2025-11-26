@@ -169,7 +169,7 @@ class WebcamApp:
 
     def setup_window(self):
         screens = pyglet.display.get_display().get_screens()
-        screen = screens[1]
+        screen = screens[-1]
         try:
             self.window = pyglet.window.Window(fullscreen=True, config=config, vsync=True, display=0, screen=screen)
         except pyglet.window.NoSuchConfigException:
@@ -273,7 +273,7 @@ class WebcamApp:
             
             # Play corresponding audio file when prompt changes
             try:
-                audio_idx = self.current_prompt_idx % (n // 2)
+                audio_idx = self.current_prompt_idx
                 audio_file = f"audio/{audio_idx:02d}.wav"
                 if os.path.exists(audio_file):
                     pygame.mixer.music.stop()
