@@ -7,3 +7,6 @@ config.sh
 audio
 *.zip
 *.png
+*.wav
+stable-fast/**
+

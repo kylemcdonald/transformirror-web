@@ -10,7 +10,7 @@ from diffusion_processor import DiffusionProcessor
 ROOT_DIR = Path(__file__).resolve().parent
 SAMPLES_DIR = ROOT_DIR / "samples"
 RESULTS_DIR = ROOT_DIR / "results"
-PROMPTS_FILE = ROOT_DIR / "alt-prompts.txt"
+PROMPTS_FILE = ROOT_DIR / "prompts.txt"
 
 
 def load_prompts(prompts_path: Path) -> List[str]:
