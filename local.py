@@ -29,15 +29,9 @@ config = pyglet.gl.Config(
 
 class WebcamApp:
     def __init__(self):
-        for attempt in range(3):
-            try:
-                pygame.mixer.init()
-                break
-            except pygame.error:
-                print("Failed to initialize pygame mixer. Retrying...")
-                time.sleep(1)
-                
-        print("Successfully initialized pygame mixer")
+        self.audio_enabled = False
+        self.last_audio_init_attempt = 0
+        self.init_audio(force=True)
         
         # Initialize logger and debug counters
         self.logger = TraceLogger("local", "webcam_display")
@@ -104,10 +98,31 @@ class WebcamApp:
         self.collect_socket.setsockopt(zmq.LINGER, 0)
 
     def setup_window(self):
+        display = pyglet.display.get_display()
+        screens = display.get_screens()
+        screen = None
+
+        if screens:
+            screen_index = min(max(self.display_index, 0), len(screens) - 1)
+            screen = screens[screen_index]
+            print(
+                f"Using display {screen_index}: "
+                f"{screen.width}x{screen.height} at ({screen.x}, {screen.y})"
+            )
+
         try:
-            self.window = pyglet.window.Window(fullscreen=True, config=config, vsync=True)
+            self.window = pyglet.window.Window(
+                fullscreen=True,
+                screen=screen,
+                config=config,
+                vsync=True,
+            )
         except pyglet.window.NoSuchConfigException:
-            self.window = pyglet.window.Window(fullscreen=True, vsync=True)
+            self.window = pyglet.window.Window(
+                fullscreen=True,
+                screen=screen,
+                vsync=True,
+            )
         
         # Register event handlers
         self.window.event(self.on_draw)
@@ -128,15 +143,19 @@ class WebcamApp:
             self.last_prompt_change = current_time
             
             # Play corresponding audio file when prompt changes
-            try:
-                audio_idx = self.current_prompt_idx % (n // 2)
-                audio_file = f"audio/{audio_idx:02d}.wav"
-                if os.path.exists(audio_file):
-                    pygame.mixer.music.stop()
-                    pygame.mixer.music.load(audio_file)
-                    pygame.mixer.music.play()
-            except Exception as e:
-                self.logger.error(f"Error playing audio: {str(e)}")
+            if not self.audio_enabled:
+                self.init_audio()
+
+            if self.audio_enabled:
+                try:
+                    audio_idx = self.current_prompt_idx % (n // 2)
+                    audio_file = f"audio/{audio_idx:02d}.wav"
+                    if os.path.exists(audio_file):
+                        pygame.mixer.music.stop()
+                        pygame.mixer.music.load(audio_file)
+                        pygame.mixer.music.play()
+                except Exception as e:
+                    self.logger.error(f"Error playing audio: {str(e)}")
             
         return self.prompts[self.current_prompt_idx]
 
@@ -146,6 +165,31 @@ class WebcamApp:
             self.camera_fps = settings.get("camera_fps", 20)
             self.prompt_cycle_time = settings.get("prompt_cycle_time", 10)
             self.settings_show_processed = settings.get("show_processed", False)
+            self.display_index = settings.get("display_index", 1)
+
+    def init_audio(self, force=False):
+        current_time = time.time()
+        if not force and current_time - self.last_audio_init_attempt < 5:
+            return
+
+        self.last_audio_init_attempt = current_time
+
+        for attempt in range(3):
+            try:
+                pygame.mixer.pre_init(44100, -16, 2, 1024)
+                if not pygame.get_init():
+                    pygame.init()
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                self.audio_enabled = True
+                print("Successfully initialized pygame mixer")
+                return
+            except pygame.error as e:
+                self.audio_enabled = False
+                print(f"Failed to initialize pygame mixer (attempt {attempt + 1}/3): {e}")
+                time.sleep(1)
+
+        print("Audio playback disabled: pygame mixer could not be initialized")
 
     def check_settings(self, dt):
         try:
@@ -353,7 +397,8 @@ class WebcamApp:
             self.shutdown.set()
             self.capture_thread.join()
             self.process_thread.join()
-            pygame.mixer.quit()  # Clean up pygame mixer
+            if self.audio_enabled:
+                pygame.mixer.quit()  # Clean up pygame mixer
             self.context.destroy()
             self.collect_socket.close()
             self.distribute_socket.close()

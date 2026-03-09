@@ -1,5 +1,6 @@
 {
     "show_processed": true,
     "camera_fps": 20,
-    "prompt_cycle_time": 30
+    "prompt_cycle_time": 30,
+    "display_index": 1
 }

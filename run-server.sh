@@ -1,4 +1,6 @@
 #!/bin/bash
 
+export PYTHONNOUSERSITE=1
+
 # source venv/bin/activate
-python3 server.py
+/home/bizon/anaconda3/envs/transformirror-py31020-clean/bin/python server.py

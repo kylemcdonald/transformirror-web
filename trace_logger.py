@@ -115,6 +115,12 @@ class TraceLogger:
             print("Warning: Instant trace event dropped due to full queue")
         except Exception as e:
             print(f"Error sending instant trace event: {e}")
+
+    def error(self, message):
+        """Compatibility helper for code paths that expect a logger-like interface."""
+        print(f"ERROR [{self.process_name}]: {message}")
+        if self.enabled:
+            self.instantEvent("error", {"message": message})
             
     def __del__(self):
         if hasattr(self, 'socket') and self.enabled:
