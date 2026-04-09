@@ -17,6 +17,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 output_queue_size = 2
 
+
+def load_ssl_context():
+    cert_path = os.path.join(os.getcwd(), "cert.pem")
+    key_path = os.path.join(os.getcwd(), "key.pem")
+    if not (os.path.exists(cert_path) and os.path.exists(key_path)):
+        logger.info("SSL certificates not found, starting without TLS")
+        return None
+
+    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ssl_context.load_cert_chain(cert_path, key_path)
+    logger.info("Loaded TLS certificate from %s", cert_path)
+    return ssl_context
+
 async def index(request):
     with open("index.html", "r") as f:
         content = f.read()
@@ -173,9 +186,5 @@ if __name__ == '__main__':
     app.on_shutdown.append(on_shutdown)
     app.on_startup.append(on_startup)
 
-    # Create an SSL context
-    # ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    # ssl_context.load_cert_chain('cert.pem', 'key.pem')
-
-    # Run the app with SSL
-    web.run_app(app, access_log=None, port=8443)#, ssl_context=ssl_context)
+    ssl_context = load_ssl_context()
+    web.run_app(app, access_log=None, port=8443, ssl_context=ssl_context)
