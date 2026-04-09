@@ -113,6 +113,7 @@ class DiffusionProcessor:
                 self.compel = None
 
             self.generator = torch.Generator(device=self.device).manual_seed(0)
+            self.input_size = 768
             
             if warmup:
                 warmup_shape = [int(e) for e in warmup.split("x")]
@@ -184,7 +185,8 @@ class DiffusionProcessor:
         if isinstance(prompt, bytes):
             prompt_utf8 = prompt.decode("utf-8")
 
-        # img = cv2.resize(img, (768, 768), interpolation=cv2.INTER_AREA)
+        if img.shape[0] != self.input_size or img.shape[1] != self.input_size:
+            img = cv2.resize(img, (self.input_size, self.input_size), interpolation=cv2.INTER_AREA)
 
         img = np.float32(img) / 255.0
         filtered_img = self.run(

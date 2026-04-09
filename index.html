@@ -131,6 +131,7 @@
 
   <script>
     const quality = 0.5;
+    const remoteSize = 768;
     let ws, localStream, canvas, ctx, startTime, sendFrameCount = 0, receiveFrameCount = 0,
         bytesSent = 0, bytesReceived = 0, lastUpdateTime, lastBytesSent = 0, lastBytesReceived = 0,
         videoFrameCallbackId, debugInfoVisible = false, isMobile = false, isUsingRearCamera = false;
@@ -244,8 +245,8 @@
         const settings = track.getSettings();
 
         canvas = document.createElement('canvas');
-        canvas.width = settings.width;
-        canvas.height = settings.height;
+        canvas.width = remoteSize;
+        canvas.height = remoteSize;
         ctx = canvas.getContext('2d', { willReadFrequently: true });
 
         // Set up the local video display
@@ -260,8 +261,8 @@
         videoElement.playsInline = true;
 
         const remoteCanvas = document.getElementById('remoteVideo');
-        remoteCanvas.width = 768;
-        remoteCanvas.height = 768;
+        remoteCanvas.width = remoteSize;
+        remoteCanvas.height = remoteSize;
         const remoteCtx = remoteCanvas.getContext('2d');
 
         // Wait for the video element to be ready before establishing WebSocket connection
@@ -366,19 +367,16 @@
       const videoHeight = videoElement.videoHeight;
       const size = Math.min(videoWidth, videoHeight);
 
-      canvas.width = size;
-      canvas.height = size;
-
       // Calculate offsets to center the crop
       const xOffset = (videoWidth - size) / 2;
       const yOffset = (videoHeight - size) / 2;
 
       if (isUsingRearCamera) {
-        ctx.drawImage(videoElement, xOffset, yOffset, size, size, 0, 0, size, size);
+        ctx.drawImage(videoElement, xOffset, yOffset, size, size, 0, 0, remoteSize, remoteSize);
       } else {
         ctx.save();
         ctx.scale(-1, 1);
-        ctx.drawImage(videoElement, xOffset, yOffset, size, size, -size, 0, size, size);
+        ctx.drawImage(videoElement, xOffset, yOffset, size, size, -remoteSize, 0, remoteSize, remoteSize);
         ctx.restore();
       }
       

@@ -33,7 +33,14 @@ def load_ssl_context():
 async def index(request):
     with open("index.html", "r") as f:
         content = f.read()
-    return web.Response(content_type="text/html", text=content)
+    return web.Response(
+        content_type="text/html",
+        text=content,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
