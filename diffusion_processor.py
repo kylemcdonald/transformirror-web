@@ -186,7 +186,7 @@ class DiffusionProcessor:
 
         # img = cv2.resize(img, (768, 768), interpolation=cv2.INTER_AREA)
 
-        # img = np.float32(img) / 255
+        img = np.float32(img) / 255.0
         filtered_img = self.run(
             images=[img],
             seed=0,
@@ -194,7 +194,11 @@ class DiffusionProcessor:
             num_inference_steps=2,
             strength=0.7
         )[0]
-        # filtered_img = np.uint8(filtered_img * 255)
+        # diffusers returns float images in [0, 1] for output_type="np"
+        if np.issubdtype(filtered_img.dtype, np.floating):
+            filtered_img = np.clip(filtered_img * 255.0, 0, 255).astype(np.uint8)
+        else:
+            filtered_img = np.clip(filtered_img, 0, 255).astype(np.uint8)
         
         end_time = time.time()
         duration = (end_time - start_time) * 1000  # Convert to milliseconds
