@@ -74,6 +74,9 @@ async def get_prompts(request):
         logger.error(f"Error reading prompts file: {e}")
         return web.Response(status=500, text="Internal server error")
 
+async def health(request):
+    return web.json_response({"status": "ok"})
+
 
 def distribute_loop(app):
     incoming_client_frames = app['incoming_client_frames']
@@ -165,6 +168,7 @@ if __name__ == '__main__':
     app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/set', set_parameters)
     app.router.add_get('/prompts', get_prompts)
+    app.router.add_get('/health', health)
     app.router.add_static('/audio', path='data/audio', name='audio')
     app.on_shutdown.append(on_shutdown)
     app.on_startup.append(on_startup)

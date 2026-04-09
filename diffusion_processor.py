@@ -3,11 +3,19 @@ import numpy as np
 import time
 from fixed_seed import fix_seed
 import cv2
+import os
 
-from sfast.compilers.stable_diffusion_pipeline_compiler import (
-    compile,
-    CompilationConfig,
-)
+try:
+    from sfast.compilers.stable_diffusion_pipeline_compiler import (
+        compile,
+        CompilationConfig,
+    )
+    HAVE_STABLE_FAST = True
+except Exception as exc:
+    compile = None
+    CompilationConfig = None
+    HAVE_STABLE_FAST = False
+    STABLE_FAST_IMPORT_ERROR = exc
 
 from diffusers.utils.logging import disable_progress_bar
 from diffusers import AutoPipelineForImage2Image, AutoencoderTiny
@@ -24,6 +32,13 @@ def is_rtx_5090(gpu_id=0):
         return "5090" in gpu_name
     except:
         return False
+
+def env_flag(name, default):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() not in {"0", "false", "no", "off"}
+
 
 def build_pipe(local_files_only):
     base_model = "stabilityai/sdxl-turbo"
@@ -47,8 +62,12 @@ def build_pipe(local_files_only):
     return pipe
 
 class DiffusionProcessor:
-    def __init__(self, warmup="1x768x768x3", local_files_only=True, gpu_id=0, use_compel=True):
+    def __init__(self, warmup="1x768x768x3", local_files_only=None, gpu_id=0, use_compel=True):
         warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
+
+        if local_files_only is None:
+            local_files_only = env_flag("TRANSFORMIRROR_LOCAL_FILES_ONLY", False)
+        use_stable_fast = env_flag("TRANSFORMIRROR_USE_STABLE_FAST", True)
 
         self.device = torch.device(f"cuda:{gpu_id}")
         with torch.cuda.device(self.device):
@@ -64,12 +83,16 @@ class DiffusionProcessor:
             if is_5090:
                 print(f"{self.device}: RTX 5090 detected - disabling Xformers and fused linear GEGLU for compatibility")
             
-            config = CompilationConfig.Default()
-            config.enable_xformers = not is_5090  # Disable xformers only for RTX 5090
-            config.enable_fused_linear_geglu = not is_5090  # Disable fused linear GEGLU only for RTX 5090
-            self.pipe = compile(self.pipe, config=config)
-
-            print(f"{self.device}: model compiled")
+            if use_stable_fast and HAVE_STABLE_FAST:
+                config = CompilationConfig.Default()
+                config.enable_xformers = not is_5090  # Disable xformers only for RTX 5090
+                config.enable_fused_linear_geglu = not is_5090  # Disable fused linear GEGLU only for RTX 5090
+                self.pipe = compile(self.pipe, config=config)
+                print(f"{self.device}: model compiled")
+            elif use_stable_fast and not HAVE_STABLE_FAST:
+                print(f"{self.device}: stable-fast unavailable, continuing without compile: {STABLE_FAST_IMPORT_ERROR}", flush=True)
+            else:
+                print(f"{self.device}: stable-fast disabled, continuing without compile", flush=True)
 
             self.pipe.to(device=self.device, dtype=torch.float16)
             self.pipe.set_progress_bar_config(disable=True)
