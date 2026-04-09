@@ -1,5 +1,6 @@
 import argparse
 import os
+import time
 
 import cv2
 import numpy as np
@@ -28,7 +29,7 @@ def main():
     parser.add_argument("--width", type=int, default=768)
     parser.add_argument("--height", type=int, default=768)
     parser.add_argument("--iterations", type=int, default=20)
-    parser.add_argument("--warmup", default="1x768x768x3")
+    parser.add_argument("--warmup")
     parser.add_argument("--use-compel", action="store_true")
     parser.add_argument("--output-dir", default="artifacts/repeat")
     args = parser.parse_args()
@@ -44,23 +45,36 @@ def main():
 
     stats = []
     for i in range(args.iterations):
+        start = time.perf_counter()
         out = processor(img, args.prompt)
+        duration_ms = (time.perf_counter() - start) * 1000.0
         out = np.clip(out, 0, 255).astype(np.uint8)
         mean = float(out.mean())
         min_v = int(out.min())
         max_v = int(out.max())
-        stats.append((i, mean, min_v, max_v))
+        stats.append((i, duration_ms, mean, min_v, max_v))
 
         out_bgr = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
         out_path = os.path.join(args.output_dir, f"iter-{i:03d}.jpg")
         ok = cv2.imwrite(out_path, out_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         if not ok:
             raise RuntimeError(f"Failed to write output image to {out_path}")
-        print(f"iter={i} mean={mean:.2f} min={min_v} max={max_v} output={out_path}", flush=True)
+        print(
+            f"iter={i} duration_ms={duration_ms:.1f} mean={mean:.2f} min={min_v} max={max_v} output={out_path}",
+            flush=True,
+        )
 
-    means = [mean for _, mean, _, _ in stats]
+    durations = [duration_ms for _, duration_ms, _, _, _ in stats]
+    means = [mean for _, _, mean, _, _ in stats]
     print(
-        f"summary iterations={len(stats)} mean_min={min(means):.2f} mean_max={max(means):.2f} mean_avg={sum(means)/len(means):.2f}",
+        "summary "
+        f"iterations={len(stats)} "
+        f"duration_min_ms={min(durations):.1f} "
+        f"duration_max_ms={max(durations):.1f} "
+        f"duration_avg_ms={sum(durations)/len(durations):.1f} "
+        f"mean_min={min(means):.2f} "
+        f"mean_max={max(means):.2f} "
+        f"mean_avg={sum(means)/len(means):.2f}",
         flush=True,
     )
 

@@ -40,6 +40,13 @@ def env_flag(name, default):
     return value.lower() not in {"0", "false", "no", "off"}
 
 
+def env_int(name, default):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return int(value)
+
+
 def build_pipe(local_files_only):
     base_model = "stabilityai/sdxl-turbo"
     vae_model = "madebyollin/taesdxl"
@@ -62,12 +69,15 @@ def build_pipe(local_files_only):
     return pipe
 
 class DiffusionProcessor:
-    def __init__(self, warmup="1x768x768x3", local_files_only=None, gpu_id=0, use_compel=True):
+    def __init__(self, warmup=None, local_files_only=None, gpu_id=0, use_compel=True):
         warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
 
         if local_files_only is None:
             local_files_only = env_flag("TRANSFORMIRROR_LOCAL_FILES_ONLY", False)
         use_stable_fast = env_flag("TRANSFORMIRROR_USE_STABLE_FAST", True)
+        self.input_size = env_int("TRANSFORMIRROR_IMAGE_SIZE", 1080)
+        if warmup is None:
+            warmup = f"1x{self.input_size}x{self.input_size}x3"
 
         self.device = torch.device(f"cuda:{gpu_id}")
         with torch.cuda.device(self.device):
@@ -113,7 +123,6 @@ class DiffusionProcessor:
                 self.compel = None
 
             self.generator = torch.Generator(device=self.device).manual_seed(0)
-            self.input_size = 768
             
             if warmup:
                 warmup_shape = [int(e) for e in warmup.split("x")]

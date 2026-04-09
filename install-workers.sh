@@ -16,7 +16,7 @@ start_without_systemd() {
             exit 0
         fi
 
-        tmux new-session -d -s "$SERVICE_ID" "cd '$WORKDIR' && env HF_HOME=/workspace/.cache PYTHONUNBUFFERED=1 TRANSFORMIRROR_USE_STABLE_FAST=1 '$WORKDIR/run-workers.sh' >>'$LOGDIR/workers.log' 2>&1"
+        tmux new-session -d -s "$SERVICE_ID" "cd '$WORKDIR' && env HF_HOME=/workspace/.cache PYTHONUNBUFFERED=1 TRANSFORMIRROR_USE_STABLE_FAST=1 TRANSFORMIRROR_IMAGE_SIZE=1080 '$WORKDIR/run-workers.sh' >>'$LOGDIR/workers.log' 2>&1"
         echo "$SERVICE_ID" >"$PIDFILE"
         echo "Started $SERVICE_NAME in tmux session $SERVICE_ID"
         exit 0
@@ -31,6 +31,7 @@ start_without_systemd() {
         HF_HOME=/workspace/.cache \
         PYTHONUNBUFFERED=1 \
         TRANSFORMIRROR_USE_STABLE_FAST=1 \
+        TRANSFORMIRROR_IMAGE_SIZE=1080 \
         "$WORKDIR/run-workers.sh" >>"$LOGDIR/workers.log" 2>&1 &
     echo $! >"$PIDFILE"
     echo "Started $SERVICE_NAME without systemd (PID $!)"
@@ -51,6 +52,7 @@ RestartSec=5
 Environment=HF_HOME=/workspace/.cache
 Environment=PYTHONUNBUFFERED=1
 Environment=TRANSFORMIRROR_USE_STABLE_FAST=1
+Environment=TRANSFORMIRROR_IMAGE_SIZE=1080
 [Install]
 WantedBy=multi-user.target
 EOL
