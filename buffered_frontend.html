@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Transformirror Buffered</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Transformirror Buffered">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: black;
+    }
+    body {
+      font-family: Arial, sans-serif;
+      position: fixed;
+      inset: 0;
+    }
+    #remoteVideo {
+      position: fixed;
+      top: 0;
+      left: 50%;
+      width: 100vh;
+      height: 100vh;
+      transform: translateX(-50%);
+      transition: transform 0.3s ease;
+    }
+    #controls {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .control-item {
+      margin-bottom: 20px;
+      padding: 10px;
+      font-size: 18px;
+      background-color: #333;
+      color: white;
+      border: 2px solid white;
+      border-radius: 5px;
+    }
+    #startButton {
+      padding: 15px 30px;
+      font-size: 24px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      touch-action: manipulation;
+    }
+    #startButton:hover {
+      background-color: #444;
+    }
+    #startButton:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #debugInfo {
+      position: fixed;
+      bottom: 10px;
+      left: 10px;
+      background-color: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      font-size: 12px;
+      z-index: 1000;
+      display: none;
+      white-space: pre-wrap;
+    }
+    #promptForm {
+      display: none;
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1001;
+      background-color: rgba(51, 51, 51, 0.8);
+      padding: 10px;
+      border-radius: 5px;
+    }
+    #promptInput {
+      padding: 10px;
+      font-size: 16px;
+      width: 300px;
+      border: none;
+      border-radius: 3px;
+      -webkit-appearance: none;
+      appearance: none;
+      background-color: white;
+    }
+    #localVideo {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      width: 150px;
+      height: 150px;
+      object-fit: cover;
+      border: 2px solid white;
+      border-radius: 10px;
+      z-index: 2000;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <select id="videoDevices" class="control-item"></select>
+    <select id="cameraDirection" class="control-item">
+      <option value="user">Front Camera</option>
+      <option value="environment">Rear Camera</option>
+    </select>
+    <button id="startButton" class="control-item" onclick="start()">Start</button>
+  </div>
+  <canvas id="remoteVideo"></canvas>
+  <div id="debugInfo"></div>
+  <form id="promptForm">
+    <input type="text" id="promptInput" placeholder="Enter prompt" autocomplete="off" autocorrect="off" autocapitalize="off">
+  </form>
+  <video id="localVideo" autoplay playsinline muted></video>
+  <audio id="promptAudio" preload="auto"></audio>
+
+  <script>
+    const quality = 0.5;
+    const remoteSize = 1080;
+    const TARGET_RENDER_INTERVAL_MS = 1000 / 30;
+    const MIN_BUFFER_MS = 75;
+    const MAX_BUFFER_MS = 150;
+    const DEFAULT_BUFFER_MS = 150;
+    const MIN_BUFFER_OVERRIDE_MS = 0;
+    const MAX_BUFFER_OVERRIDE_MS = 500;
+    const MAX_BUFFERED_FRAMES = 12;
+    const DEFAULT_FRAME_SELECTION_MODE = 'oldest';
+
+    let ws, localStream, canvas, ctx, startTime, sendFrameCount = 0, receiveFrameCount = 0,
+        droppedReceiveFrameCount = 0, renderedFrameCount = 0, repeatedRenderFrameCount = 0,
+        bytesSent = 0, bytesReceived = 0, lastUpdateTime = 0, lastBytesSent = 0, lastBytesReceived = 0,
+        videoFrameCallbackId, debugInfoVisible = false, isMobile = false, isUsingRearCamera = false;
+
+    let lastThirtySendFrames = [], lastThirtyReceiveFrames = [], lastThirtySendBytes = [], lastThirtyReceiveBytes = [];
+    let receiveFrameIntervals = [];
+    let renderFrameIntervals = [];
+    let captureFrameIntervals = [];
+    let snapshotDurations = [];
+    let encodeDurations = [];
+    let lastThirtyRenderedFrames = [];
+    let lastTenSecondsSentFrames = [];
+    let lastTenSecondsFreshRenderedFrames = [];
+    let receiveFrameQueue = [];
+    let renderLoopHandle = null;
+    let lastPresentedBitmap = null;
+    let lastPresentedBitmapWidth = remoteSize;
+    let lastPresentedBitmapHeight = remoteSize;
+    let nextPresentationTime = 0;
+    let activeBufferDelayMs = DEFAULT_BUFFER_MS;
+    let fixedBufferDelayMs = DEFAULT_BUFFER_MS;
+    let frameSelectionMode = DEFAULT_FRAME_SELECTION_MODE;
+    let isPageActive = true;
+
+    let videoElement;
+    let showLocalVideo = false;
+    let autoConnect = false;
+    let promptCycle = false;
+    let prompts = [];
+    let currentPromptIndex = 0;
+    let promptCycleInterval = null;
+    let audioEnabled = false;
+    let autoReloadInterval = null;
+    let encodeInFlight = false;
+    let pendingSendCanvas = null;
+    let lastCaptureTimestamp = 0;
+    let sendQueueOverwriteCount = 0;
+    let snapshotCanvasPool = [];
+
+    async function setup() {
+      isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      document.getElementById('cameraDirection').style.display = isMobile ? 'block' : 'none';
+
+      const deviceSelect = document.getElementById('videoDevices');
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+
+      deviceSelect.innerHTML = videoDevices.map(device =>
+        `<option value="${device.deviceId}">${device.label || `Camera ${deviceSelect.length + 1}`}</option>`
+      ).join('');
+
+      deviceSelect.style.display = isMobile ? 'none' : 'block';
+
+      const urlParams = new URLSearchParams(window.location.search);
+      debugInfoVisible = urlParams.get('debug') === 'true';
+      document.getElementById('debugInfo').style.display = debugInfoVisible ? 'block' : 'none';
+
+      const bufferParam = urlParams.get('buffer');
+      if (bufferParam !== null) {
+        const parsedBufferMs = parseInt(bufferParam, 10);
+        if (!isNaN(parsedBufferMs)) {
+          fixedBufferDelayMs = Math.max(
+            MIN_BUFFER_OVERRIDE_MS,
+            Math.min(MAX_BUFFER_OVERRIDE_MS, parsedBufferMs)
+          );
+          activeBufferDelayMs = fixedBufferDelayMs;
+        } else {
+          console.warn('Invalid buffer parameter. Must be a number of milliseconds.');
+        }
+      }
+
+      const modeParam = urlParams.get('mode');
+      if (modeParam === 'oldest' || modeParam === 'newest') {
+        frameSelectionMode = modeParam;
+      } else if (modeParam !== null) {
+        console.warn('Invalid mode parameter. Must be "oldest" or "newest".');
+      }
+
+      showLocalVideo = urlParams.get('camera') === 'true';
+      document.getElementById('localVideo').style.display = showLocalVideo ? 'block' : 'none';
+
+      const showPrompt = urlParams.get('prompt') === 'true';
+      document.getElementById('promptForm').style.display = showPrompt ? 'block' : 'none';
+
+      autoConnect = urlParams.get('autoconnect') === 'true';
+      if (autoConnect) {
+        document.getElementById('controls').style.display = 'none';
+        start();
+      }
+
+      promptCycle = urlParams.get('cycle') === 'true';
+      if (promptCycle) {
+        await loadPromptsAndStartCycling();
+      } else {
+        await loadPrompts();
+      }
+
+      const autoreloadParam = urlParams.get('autoreload');
+      if (autoreloadParam) {
+        const reloadSeconds = parseInt(autoreloadParam, 10);
+        if (!isNaN(reloadSeconds) && reloadSeconds > 0) {
+          autoReloadInterval = setInterval(() => {
+            console.log(`Auto-reloading page after ${reloadSeconds} seconds`);
+            window.location.reload();
+          }, reloadSeconds * 1000);
+        } else {
+          console.warn('Invalid autoreload parameter. Must be a positive number of seconds.');
+        }
+      }
+    }
+
+    async function start() {
+      const startButton = document.getElementById('startButton');
+      const deviceSelect = document.getElementById('videoDevices');
+      const directionSelect = document.getElementById('cameraDirection');
+
+      if (!autoConnect) {
+        startButton.textContent = 'Connecting...';
+        startButton.disabled = true;
+      }
+
+      const selectedDeviceId = deviceSelect.value;
+      const selectedDirection = directionSelect.value;
+      const constraints = {
+        video: isMobile
+          ? { facingMode: { exact: selectedDirection } }
+          : {
+              deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
+              width: 1080,
+              height: 1080,
+              frameRate: 30
+            },
+        audio: false
+      };
+
+      audioEnabled = true;
+
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        isUsingRearCamera = isMobile && selectedDirection === 'environment';
+
+        canvas = document.createElement('canvas');
+        canvas.width = remoteSize;
+        canvas.height = remoteSize;
+        ctx = canvas.getContext('2d', { willReadFrequently: true });
+        snapshotCanvasPool = createSnapshotCanvasPool(3, remoteSize);
+
+        const localVideoElement = document.getElementById('localVideo');
+        localVideoElement.srcObject = localStream;
+        localVideoElement.style.transform = isUsingRearCamera ? 'none' : 'scaleX(-1)';
+
+        videoElement = document.createElement('video');
+        videoElement.srcObject = localStream;
+        videoElement.autoplay = true;
+        videoElement.playsInline = true;
+
+        const remoteCanvas = document.getElementById('remoteVideo');
+        remoteCanvas.width = remoteSize;
+        remoteCanvas.height = remoteSize;
+        const remoteCtx = remoteCanvas.getContext('2d');
+        remoteCtx.imageSmoothingEnabled = true;
+        remoteCtx.imageSmoothingQuality = 'high';
+
+        videoElement.addEventListener('loadedmetadata', () => {
+          ws = new WebSocket(`wss://${window.location.host}/ws`);
+          ws.binaryType = 'blob';
+
+          ws.onopen = () => {
+            document.getElementById('controls').style.display = 'none';
+            startTime = Date.now();
+            requestVideoFrame();
+            startRenderLoop(remoteCanvas, remoteCtx);
+
+            if (promptCycle && prompts.length > 0) {
+              sendPrompt(prompts[currentPromptIndex]);
+              playAudioForPrompt(currentPromptIndex);
+
+              promptCycleInterval = setInterval(() => {
+                currentPromptIndex = (currentPromptIndex + 1) % prompts.length;
+                const nextPrompt = prompts[currentPromptIndex];
+                console.log(`Cycling to prompt ${currentPromptIndex + 1}/${prompts.length}: ${nextPrompt}`);
+                sendPrompt(nextPrompt);
+                playAudioForPrompt(currentPromptIndex);
+              }, 30000);
+            }
+          };
+
+          ws.onmessage = async (event) => {
+            trackReceiveArrival(event.data.size);
+
+            try {
+              const bitmap = await createImageBitmap(event.data);
+              if (!isPageActive) {
+                bitmap.close();
+                return;
+              }
+
+              const receivedAt = performance.now();
+              receiveFrameQueue.push({
+                bitmap,
+                releaseAt: receivedAt + getTargetBufferDelayMs()
+              });
+
+              trimBufferedFrames();
+              updateDebugInfo();
+            } catch (error) {
+              console.error('Error decoding received frame:', error);
+            }
+          };
+
+          ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            if (!autoConnect) {
+              startButton.textContent = 'Start';
+              startButton.disabled = false;
+              alert('Connection error. Please try again.');
+            }
+          };
+        }, { once: true });
+      } catch (error) {
+        console.error('Error accessing camera:', error);
+        if (!autoConnect) {
+          startButton.textContent = 'Start';
+          startButton.disabled = false;
+          if (error.name === 'NotAllowedError') {
+            alert('Camera access denied. Please allow camera access and try again.');
+          } else if (error.name === 'NotFoundError') {
+            alert('No camera found. Please check your camera connection.');
+          } else {
+            alert('Error accessing camera. Please try again or select a different camera.');
+          }
+        }
+      }
+    }
+
+    function requestVideoFrame() {
+      videoFrameCallbackId = videoElement.requestVideoFrameCallback(processVideoFrame);
+    }
+
+    function processVideoFrame(now) {
+      if (!localStream || !videoElement) {
+        requestVideoFrame();
+        return;
+      }
+
+      if (lastCaptureTimestamp > 0) {
+        captureFrameIntervals.push(now - lastCaptureTimestamp);
+        if (captureFrameIntervals.length > 30) {
+          captureFrameIntervals.shift();
+        }
+      }
+      lastCaptureTimestamp = now;
+
+      const videoWidth = videoElement.videoWidth;
+      const videoHeight = videoElement.videoHeight;
+      const size = Math.min(videoWidth, videoHeight);
+      const xOffset = (videoWidth - size) / 2;
+      const yOffset = (videoHeight - size) / 2;
+
+      if (isUsingRearCamera) {
+        ctx.drawImage(videoElement, xOffset, yOffset, size, size, 0, 0, remoteSize, remoteSize);
+      } else {
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.drawImage(videoElement, xOffset, yOffset, size, size, -remoteSize, 0, remoteSize, remoteSize);
+        ctx.restore();
+      }
+
+      const snapshotStart = performance.now();
+      const nextSnapshotCanvas = acquireSnapshotCanvas();
+      if (nextSnapshotCanvas) {
+        const snapshotCtx = nextSnapshotCanvas.getContext('2d', { willReadFrequently: true });
+        snapshotCtx.drawImage(canvas, 0, 0);
+        snapshotDurations.push(performance.now() - snapshotStart);
+        if (snapshotDurations.length > 30) {
+          snapshotDurations.shift();
+        }
+
+        if (pendingSendCanvas) {
+          releaseSnapshotCanvas(pendingSendCanvas);
+          sendQueueOverwriteCount++;
+        }
+        pendingSendCanvas = nextSnapshotCanvas;
+      } else {
+        sendQueueOverwriteCount++;
+      }
+
+      requestVideoFrame();
+      flushSendQueue(now);
+    }
+
+    function createSnapshotCanvasPool(size, dimension) {
+      return Array.from({ length: size }, () => {
+        const snapshot = document.createElement('canvas');
+        snapshot.width = dimension;
+        snapshot.height = dimension;
+        return snapshot;
+      });
+    }
+
+    function acquireSnapshotCanvas() {
+      return snapshotCanvasPool.pop() || null;
+    }
+
+    function releaseSnapshotCanvas(snapshotCanvas) {
+      if (snapshotCanvas) {
+        snapshotCanvasPool.push(snapshotCanvas);
+      }
+    }
+
+    function flushSendQueue(frameTimestamp) {
+      if (encodeInFlight || !pendingSendCanvas) {
+        return;
+      }
+
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        pendingSendCanvas = null;
+        return;
+      }
+
+      encodeInFlight = true;
+      const frameCanvas = pendingSendCanvas;
+      pendingSendCanvas = null;
+      const encodeStart = performance.now();
+
+      frameCanvas.toBlob((blob) => {
+        encodeInFlight = false;
+        encodeDurations.push(performance.now() - encodeStart);
+        if (encodeDurations.length > 30) {
+          encodeDurations.shift();
+        }
+
+        if (blob && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(blob);
+          bytesSent += blob.size;
+          lastBytesSent = blob.size;
+          sendFrameCount++;
+
+          const sendTimestamp = performance.now();
+          const frameInfo = { timestamp: sendTimestamp, bytes: blob.size };
+          lastThirtySendFrames.push(frameInfo);
+          lastThirtySendBytes.push(blob.size);
+          lastTenSecondsSentFrames.push(sendTimestamp);
+
+          if (lastThirtySendFrames.length > 30) {
+            lastThirtySendFrames.shift();
+            lastThirtySendBytes.shift();
+          }
+
+          trimTimestampWindow(lastTenSecondsSentFrames, sendTimestamp, 10000);
+          updateDebugInfo();
+        }
+
+        releaseSnapshotCanvas(frameCanvas);
+        flushSendQueue(frameTimestamp);
+      }, 'image/jpeg', quality);
+    }
+
+    function startRenderLoop(remoteCanvas, remoteCtx) {
+      if (renderLoopHandle) {
+        return;
+      }
+
+      nextPresentationTime = performance.now() + TARGET_RENDER_INTERVAL_MS;
+
+      const tick = (now) => {
+        if (!isPageActive) {
+          return;
+        }
+
+        if (now >= nextPresentationTime) {
+          renderBufferedFrame(remoteCanvas, remoteCtx, now);
+          nextPresentationTime += TARGET_RENDER_INTERVAL_MS;
+          if (nextPresentationTime < now) {
+            nextPresentationTime = now + TARGET_RENDER_INTERVAL_MS;
+          }
+        }
+
+        renderLoopHandle = window.requestAnimationFrame(tick);
+      };
+
+      renderLoopHandle = window.requestAnimationFrame(tick);
+    }
+
+    function renderBufferedFrame(remoteCanvas, remoteCtx, now) {
+      let eligibleCount = 0;
+      while (eligibleCount < receiveFrameQueue.length && receiveFrameQueue[eligibleCount].releaseAt <= now) {
+        eligibleCount += 1;
+      }
+
+      if (eligibleCount === 0) {
+        if (lastPresentedBitmap) {
+          remoteCtx.drawImage(
+            lastPresentedBitmap,
+            0,
+            0,
+            lastPresentedBitmapWidth,
+            lastPresentedBitmapHeight,
+            0,
+            0,
+            remoteCanvas.width,
+            remoteCanvas.height
+          );
+          repeatedRenderFrameCount++;
+          recordRenderedFrame();
+        }
+        updateDebugInfo();
+        return;
+      }
+
+      if (frameSelectionMode === 'newest') {
+        while (eligibleCount > 1) {
+          const staleFrame = receiveFrameQueue.shift();
+          staleFrame.bitmap.close();
+          droppedReceiveFrameCount++;
+          eligibleCount -= 1;
+        }
+      }
+
+      const frame = receiveFrameQueue.shift();
+      remoteCtx.drawImage(frame.bitmap, 0, 0, remoteCanvas.width, remoteCanvas.height);
+      replaceLastPresentedBitmap(frame.bitmap);
+      renderedFrameCount++;
+      lastTenSecondsFreshRenderedFrames.push(now);
+      trimTimestampWindow(lastTenSecondsFreshRenderedFrames, now, 10000);
+      recordRenderedFrame();
+      updateDebugInfo();
+    }
+
+    function replaceLastPresentedBitmap(bitmap) {
+      if (lastPresentedBitmap) {
+        lastPresentedBitmap.close();
+      }
+      lastPresentedBitmap = bitmap;
+      lastPresentedBitmapWidth = bitmap.width;
+      lastPresentedBitmapHeight = bitmap.height;
+    }
+
+    function recordRenderedFrame() {
+      const renderTime = Date.now();
+      lastThirtyRenderedFrames.push(renderTime);
+      if (lastThirtyRenderedFrames.length > 30) {
+        lastThirtyRenderedFrames.shift();
+      }
+
+      if (lastThirtyRenderedFrames.length > 1) {
+        const previousRenderTime = lastThirtyRenderedFrames[lastThirtyRenderedFrames.length - 2];
+        renderFrameIntervals.push(renderTime - previousRenderTime);
+        if (renderFrameIntervals.length > 30) {
+          renderFrameIntervals.shift();
+        }
+      }
+    }
+
+    function trimBufferedFrames() {
+      while (receiveFrameQueue.length > MAX_BUFFERED_FRAMES) {
+        const droppedFrame = receiveFrameQueue.shift();
+        droppedFrame.bitmap.close();
+        droppedReceiveFrameCount++;
+      }
+    }
+
+    function getTargetBufferDelayMs() {
+      if (fixedBufferDelayMs !== null) {
+        activeBufferDelayMs = fixedBufferDelayMs;
+        return activeBufferDelayMs;
+      }
+
+      const adaptiveDelay = calculateJitter(receiveFrameIntervals) * 2.5;
+      activeBufferDelayMs = Math.max(MIN_BUFFER_MS, Math.min(MAX_BUFFER_MS, adaptiveDelay || DEFAULT_BUFFER_MS));
+      return activeBufferDelayMs;
+    }
+
+    function trimTimestampWindow(timestamps, now, windowMs) {
+      while (timestamps.length > 0 && (now - timestamps[0]) > windowMs) {
+        timestamps.shift();
+      }
+    }
+
+    function trackReceiveArrival(frameBytes) {
+      bytesReceived += frameBytes;
+      lastBytesReceived = frameBytes;
+      receiveFrameCount++;
+
+      const currentTime = Date.now();
+      const frameInfo = { timestamp: currentTime, bytes: frameBytes };
+      lastThirtyReceiveFrames.push(frameInfo);
+      lastThirtyReceiveBytes.push(frameBytes);
+
+      if (lastThirtyReceiveFrames.length > 1) {
+        const previousFrame = lastThirtyReceiveFrames[lastThirtyReceiveFrames.length - 2];
+        receiveFrameIntervals.push(currentTime - previousFrame.timestamp);
+        if (receiveFrameIntervals.length > 30) {
+          receiveFrameIntervals.shift();
+        }
+      }
+
+      if (lastThirtyReceiveFrames.length > 30) {
+        lastThirtyReceiveFrames.shift();
+        lastThirtyReceiveBytes.shift();
+      }
+    }
+
+    function calculateJitter(intervals) {
+      if (intervals.length < 2) return 0;
+
+      const mean = intervals.reduce((sum, interval) => sum + interval, 0) / intervals.length;
+      const variance = intervals.reduce((sum, interval) => sum + Math.pow(interval - mean, 2), 0) / intervals.length;
+      return Math.sqrt(variance);
+    }
+
+    function calculateFpsFromTimestamps(timestamps) {
+      if (timestamps.length < 2) {
+        return '0.00';
+      }
+
+      const range = timestamps[timestamps.length - 1] - timestamps[0];
+      if (range <= 0) {
+        return '0.00';
+      }
+
+      return (timestamps.length / (range / 1000)).toFixed(2);
+    }
+
+    function calculateAverage(values) {
+      if (values.length === 0) {
+        return 0;
+      }
+
+      return values.reduce((sum, value) => sum + value, 0) / values.length;
+    }
+
+    function updateDebugInfo() {
+      if (!debugInfoVisible) return;
+
+      const now = Date.now();
+      if (now - lastUpdateTime < 250) return;
+
+      const sendTimeRange = lastThirtySendFrames.length > 1
+        ? lastThirtySendFrames[lastThirtySendFrames.length - 1].timestamp - lastThirtySendFrames[0].timestamp
+        : 1000;
+      const sendFps = (lastThirtySendFrames.length / (sendTimeRange / 1000)).toFixed(2);
+      const sendBandwidthKbps = ((lastThirtySendBytes.reduce((a, b) => a + b, 0) / 768) / (sendTimeRange / 1000)).toFixed();
+
+      const receiveTimeRange = lastThirtyReceiveFrames.length > 1
+        ? lastThirtyReceiveFrames[lastThirtyReceiveFrames.length - 1].timestamp - lastThirtyReceiveFrames[0].timestamp
+        : 1000;
+      const receiveFps = (lastThirtyReceiveFrames.length / (receiveTimeRange / 1000)).toFixed(2);
+      const receiveBandwidthKbps = ((lastThirtyReceiveBytes.reduce((a, b) => a + b, 0) / 768) / (receiveTimeRange / 1000)).toFixed();
+
+      const receiveJitter = calculateJitter(receiveFrameIntervals);
+      const renderJitter = calculateJitter(renderFrameIntervals);
+      const captureJitter = calculateJitter(captureFrameIntervals);
+      const renderedFps = calculateFpsFromTimestamps(lastThirtyRenderedFrames);
+      const droppedFramePercent = receiveFrameCount > 0
+        ? ((droppedReceiveFrameCount / receiveFrameCount) * 100).toFixed(1)
+        : '0.0';
+      const repeatedFramePercent = (renderedFrameCount + repeatedRenderFrameCount) > 0
+        ? ((repeatedRenderFrameCount / (renderedFrameCount + repeatedRenderFrameCount)) * 100).toFixed(1)
+        : '0.0';
+      const averageSnapshotMs = calculateAverage(snapshotDurations).toFixed(1);
+      const averageEncodeMs = calculateAverage(encodeDurations).toFixed(1);
+      trimTimestampWindow(lastTenSecondsSentFrames, performance.now(), 10000);
+      trimTimestampWindow(lastTenSecondsFreshRenderedFrames, performance.now(), 10000);
+
+      const debugInfo = `
+Send FPS: ${sendFps}
+Receive FPS: ${receiveFps}
+Rendered FPS: ${renderedFps}
+Sent Frames (10s): ${lastTenSecondsSentFrames.length}
+Fresh Rendered Frames (10s): ${lastTenSecondsFreshRenderedFrames.length}
+Send Bandwidth: ${sendBandwidthKbps} Kbps
+Receive Bandwidth: ${receiveBandwidthKbps} Kbps
+Capture Jitter: ${captureJitter.toFixed(1)} ms
+Receive Jitter: ${receiveJitter.toFixed(1)} ms
+Render Jitter: ${renderJitter.toFixed(1)} ms
+Avg Snapshot Time: ${averageSnapshotMs} ms
+Avg Encode Time: ${averageEncodeMs} ms
+Buffer Delay Target: ${activeBufferDelayMs.toFixed(0)} ms
+Buffer Mode: ${fixedBufferDelayMs !== null ? 'fixed' : 'adaptive'}
+Frame Selection Mode: ${frameSelectionMode}
+Buffered Frames: ${receiveFrameQueue.length}
+Send Queue Overwrites: ${sendQueueOverwriteCount}
+Dropped Frames: ${droppedReceiveFrameCount}/${receiveFrameCount}
+Drop Rate: ${droppedFramePercent}%
+Fresh Frames Rendered: ${renderedFrameCount}
+Repeated Frames Rendered: ${repeatedRenderFrameCount}
+Repeated Frame Rate: ${repeatedFramePercent}%
+Last Sent: ${(lastBytesSent / 768).toFixed()} Kb
+Last Received: ${(lastBytesReceived / 768).toFixed()} Kb
+Total Sent: ${(bytesSent / (768 * 768)).toFixed(2)} MB
+Total Received: ${(bytesReceived / (768 * 768)).toFixed(2)} MB
+      `;
+
+      document.getElementById('debugInfo').innerText = debugInfo.trim();
+      lastUpdateTime = now;
+    }
+
+    function submitPrompt(event) {
+      const promptInput = document.getElementById('promptInput');
+      const prompt = promptInput.value.trim();
+
+      if (event.type === 'keydown' && event.key === 'Enter') {
+        event.preventDefault();
+        sendPrompt(prompt);
+
+        const promptIndex = prompts.findIndex(p => p === prompt);
+        if (promptIndex !== -1) {
+          playAudioForPrompt(promptIndex);
+        }
+      }
+    }
+
+    function playAudioForPrompt(promptIndex) {
+      if (!audioEnabled) {
+        return;
+      }
+
+      const audioElement = document.getElementById('promptAudio');
+      if (!audioElement) {
+        return;
+      }
+
+      const audioFileCount = 20;
+      const audioIndex = promptIndex % audioFileCount;
+      audioElement.src = `/audio/${audioIndex.toString().padStart(2, '0')}.m4a`;
+      audioElement.volume = 1.0;
+      audioElement.pause();
+      audioElement.currentTime = 0;
+
+      audioElement.play().catch(() => {
+        audioEnabled = false;
+      });
+    }
+
+    function sendPrompt(prompt) {
+      if (prompt) {
+        fetch(`/set?prompt=${encodeURIComponent(prompt)}`)
+          .then(response => {
+            if (!response.ok) throw new Error('Network response was not ok');
+            document.getElementById('promptInput').value = '';
+          })
+          .catch(error => console.error('Error submitting prompt:', error));
+      }
+    }
+
+    async function loadPrompts() {
+      try {
+        const response = await fetch('/prompts');
+        if (!response.ok) throw new Error('Failed to load prompts');
+
+        prompts = await response.json();
+        if (prompts.length > 0) {
+          currentPromptIndex = Math.floor(Math.random() * prompts.length);
+        }
+      } catch (error) {
+        console.error('Error loading prompts:', error);
+      }
+    }
+
+    async function loadPromptsAndStartCycling() {
+      try {
+        const response = await fetch('/prompts');
+        if (!response.ok) throw new Error('Failed to load prompts');
+
+        prompts = await response.json();
+        if (prompts.length > 0) {
+          currentPromptIndex = Math.floor(Math.random() * prompts.length);
+        }
+      } catch (error) {
+        console.error('Error loading prompts for cycling:', error);
+      }
+    }
+
+    function cleanupBufferedFrames() {
+      while (receiveFrameQueue.length > 0) {
+        const frame = receiveFrameQueue.shift();
+        frame.bitmap.close();
+      }
+      if (lastPresentedBitmap) {
+        lastPresentedBitmap.close();
+        lastPresentedBitmap = null;
+      }
+    }
+
+    function cleanup() {
+      isPageActive = false;
+
+      if (ws) ws.close();
+      if (localStream) localStream.getTracks().forEach(track => track.stop());
+      if (videoFrameCallbackId) {
+        if (videoElement && videoElement.cancelVideoFrameCallback) {
+          videoElement.cancelVideoFrameCallback(videoFrameCallbackId);
+        } else {
+          cancelAnimationFrame(videoFrameCallbackId);
+        }
+      }
+      if (renderLoopHandle) {
+        cancelAnimationFrame(renderLoopHandle);
+        renderLoopHandle = null;
+      }
+      if (promptCycleInterval) {
+        clearInterval(promptCycleInterval);
+        promptCycleInterval = null;
+      }
+      if (autoReloadInterval) {
+        clearInterval(autoReloadInterval);
+        autoReloadInterval = null;
+      }
+
+      encodeInFlight = false;
+      pendingSendCanvas = null;
+      snapshotCanvasPool = [];
+      cleanupBufferedFrames();
+    }
+
+    window.addEventListener('beforeunload', cleanup);
+    window.addEventListener('load', () => {
+      setup();
+    });
+
+    const promptInput = document.getElementById('promptInput');
+    promptInput.addEventListener('keydown', submitPrompt);
+    promptInput.addEventListener('input', submitPrompt);
+  </script>
+</body>
+</html>

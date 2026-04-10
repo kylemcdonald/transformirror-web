@@ -42,6 +42,18 @@ async def index(request):
         },
     )
 
+async def buffered(request):
+    with open("buffered_frontend.html", "r") as f:
+        content = f.read()
+    return web.Response(
+        content_type="text/html",
+        text=content,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -185,6 +197,7 @@ if __name__ == '__main__':
     app = web.Application()
     app['websockets'] = set()
     app.router.add_get('/', index)
+    app.router.add_get('/buffered', buffered)
     app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/set', set_parameters)
     app.router.add_get('/prompts', get_prompts)
