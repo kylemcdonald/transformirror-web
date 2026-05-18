@@ -1,0 +1,22 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">Transformirror on %h</name>
+
+  <service>
+    <type>_http._tcp</type>
+    <port>8080</port>
+    <txt-record>path=/</txt-record>
+    <txt-record>api=/api/state</txt-record>
+  </service>
+
+  <service>
+    <type>_osc._udp</type>
+    <port>9000</port>
+    <txt-record>prompt=/prompt</txt-record>
+    <txt-record>seed=/seed</txt-record>
+    <txt-record>strength=/strength</txt-record>
+    <txt-record>blend=/blend</txt-record>
+    <txt-record>passthrough=/passthrough</txt-record>
+  </service>
+</service-group>

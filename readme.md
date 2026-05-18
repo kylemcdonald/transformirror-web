@@ -1,5 +1,171 @@
 # transformirror-web
 
+## Native live installation
+
+This branch includes a single-machine native Transformirror runtime for a 4090-class NVIDIA GPU. It captures a USB webcam with FFmpeg/V4L2, runs SDXL Turbo image-to-image with TAESDXL and stable-fast, displays fullscreen with Pyglet/OpenGL, and exposes realtime control over OSC and HTTP.
+
+The native runtime is intended for live video-filter use:
+
+* webcam input
+* fullscreen native display
+* default `1280x720` processing, configurable down to `1024x576`
+* OSC control for prompt, seed, strength, blend, passthrough, steps, and screenshots
+* HTTP API and browser control frontend
+* no automatic playback
+* no automatic prompt cycling
+* no audio
+
+### System packages
+
+On Ubuntu, install the base runtime dependencies:
+
+```
+sudo apt-get update
+sudo apt-get install -y \
+  git python3-pip python3-venv python3-dev build-essential cmake ninja-build \
+  pkg-config ffmpeg v4l-utils libturbojpeg libgl1 libglib2.0-0 \
+  libsm6 libxext6 libxrender1 libjpeg-dev zlib1g-dev libopenblas-dev \
+  libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxinerama-dev \
+  avahi-daemon libnss-mdns
+```
+
+The machine should already have a recent NVIDIA driver installed. This setup has been verified on an RTX 4090 with the 580 driver using CUDA 12.1 PyTorch wheels.
+
+### Python environment
+
+```
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip wheel setuptools
+.venv/bin/pip install \
+  --extra-index-url https://download.pytorch.org/whl/cu121 \
+  'torch==2.1.0+cu121' \
+  'torchvision==0.16.0+cu121' \
+  'xformers==0.0.22.post7' \
+  'stable_fast @ https://github.com/chengzeyi/stable-fast/releases/download/v0.0.13.post3/stable_fast-0.0.13.post3+torch210cu121-cp310-cp310-manylinux2014_x86_64.whl'
+.venv/bin/pip install -r requirements.txt
+```
+
+If the prebuilt stable-fast wheel is not compatible with the local CUDA/PyTorch setup, build stable-fast from source and keep the same PyTorch version unless you are also updating the diffusion code.
+
+### Running manually
+
+Edit `live_config.json` if needed. Important defaults:
+
+```
+{
+  "width": 1280,
+  "height": 720,
+  "camera_device": "/dev/video0",
+  "camera_backend": "ffmpeg",
+  "camera_fps": 30,
+  "display_index": 0,
+  "fullscreen": true,
+  "osc_port": 9000,
+  "http_port": 8080
+}
+```
+
+Start the app:
+
+```
+./run-transformirror.sh
+```
+
+The first launch downloads `stabilityai/sdxl-turbo` and `madebyollin/taesdxl`. After warmup, a 4090 should process `1280x720` frames in roughly 65-70 ms with the default two-step SDXL Turbo settings.
+
+### Systemd service
+
+Install and start the user service:
+
+```
+./install-transformirror-service.sh
+```
+
+Useful commands:
+
+```
+systemctl --user status transformirror.service
+journalctl --user -u transformirror.service -f
+systemctl --user restart transformirror.service
+systemctl --user stop transformirror.service
+```
+
+### HTTP control
+
+The HTTP server binds to `0.0.0.0:8080`. Open:
+
+```
+http://localhost:8080/
+http://<machine-ip>:8080/
+http://<hostname>.local:8080/
+```
+
+The API state endpoint is:
+
+```
+GET /api/state
+```
+
+Update controls:
+
+```
+curl -X POST http://localhost:8080/api/state \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"a neon mirror portrait","seed":42,"strength":0.7,"blend":0.5}'
+```
+
+Save the currently composed display frame:
+
+```
+curl -X POST http://localhost:8080/api/screenshot \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/tmp/transformirror.jpg"}'
+```
+
+### OSC control
+
+The OSC server binds to `0.0.0.0:9000/udp`, so it is available on LAN IPs, ZeroTier IPs, and `<hostname>.local` when mDNS resolution is available.
+
+Supported addresses:
+
+```
+/prompt        string
+/seed          int
+/strength      float 0..1
+/blend         float 0..1    # 0 = raw webcam, 1 = processed output
+/passthrough   bool          # true = raw webcam, false = processed output
+/steps         int 1..8
+/screenshot    string path
+```
+
+Namespaced versions also work:
+
+```
+/transformirror/prompt
+/transformirror/seed
+/transformirror/strength
+/transformirror/blend
+/transformirror/passthrough
+/transformirror/steps
+/transformirror/screenshot
+```
+
+### mDNS service discovery
+
+To advertise the control frontend and OSC server with Avahi/Bonjour:
+
+```
+sudo install -m 0644 -o root -g root avahi-transformirror.service /etc/avahi/services/transformirror.service
+sudo systemctl restart avahi-daemon
+```
+
+This publishes:
+
+* `_http._tcp` on port `8080`
+* `_osc._udp` on port `9000`
+
+Direct access by IP still works even if mDNS multicast is unavailable on a given network.
+
 Set up NVIDIA drivers:
 
 ```

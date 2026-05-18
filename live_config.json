@@ -1,0 +1,19 @@
+{
+  "width": 1280,
+  "height": 720,
+  "camera_device": "/dev/video0",
+  "camera_backend": "ffmpeg",
+  "camera_fps": 30,
+  "display_index": 0,
+  "fullscreen": true,
+  "mirror": true,
+  "prompt": "a cinematic mirror portrait, luminous, detailed, surreal",
+  "seed": 0,
+  "strength": 0.7,
+  "blend": 1.0,
+  "steps": 2,
+  "osc_host": "0.0.0.0",
+  "osc_port": 9000,
+  "http_host": "0.0.0.0",
+  "http_port": 8080
+}

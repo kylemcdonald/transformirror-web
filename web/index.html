@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transformirror Control</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101214;
+      --panel: #1a1f23;
+      --line: #343b42;
+      --text: #eef2f4;
+      --muted: #9aa5ad;
+      --accent: #52c7b8;
+      --accent-2: #f0b45b;
+      --danger: #e76f6f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(980px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 36px;
+    }
+
+    header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+
+    #status {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1.25fr 0.75fr;
+      gap: 18px;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 15px;
+      font-weight: 650;
+    }
+
+    label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+    }
+
+    textarea,
+    input[type="number"] {
+      width: 100%;
+      background: #0d1012;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text);
+      font: inherit;
+      padding: 10px 11px;
+      outline: none;
+    }
+
+    textarea {
+      min-height: 148px;
+      resize: vertical;
+    }
+
+    textarea:focus,
+    input[type="number"]:focus {
+      border-color: var(--accent);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 86px;
+      gap: 12px;
+      align-items: center;
+      margin: 14px 0;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #242b30;
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 650;
+      padding: 9px 12px;
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #06201d;
+    }
+
+    button.secondary {
+      background: #2c2520;
+      border-color: #614b31;
+      color: #ffd69a;
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    dl {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 9px 14px;
+      margin: 0;
+    }
+
+    dt {
+      color: var(--muted);
+    }
+
+    dd {
+      margin: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .error {
+      color: var(--danger);
+      overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 760px) {
+      main { width: min(100vw - 20px, 980px); padding-top: 18px; }
+      header { align-items: flex-start; flex-direction: column; }
+      #status { white-space: normal; }
+      .layout { grid-template-columns: 1fr; }
+      .row { grid-template-columns: 1fr 74px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Transformirror Control</h1>
+      <div id="status">Connecting</div>
+    </header>
+
+    <div class="layout">
+      <section>
+        <h2>Effect</h2>
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" spellcheck="false"></textarea>
+
+        <div class="row">
+          <div>
+            <label for="strength">Strength</label>
+            <input id="strength" type="range" min="0" max="1" step="0.01">
+          </div>
+          <input id="strengthNumber" type="number" min="0" max="1" step="0.01">
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="blend">Blend</label>
+            <input id="blend" type="range" min="0" max="1" step="0.01">
+          </div>
+          <input id="blendNumber" type="number" min="0" max="1" step="0.01">
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="seed">Seed</label>
+            <input id="seed" type="number" step="1">
+          </div>
+          <div>
+            <label for="steps">Steps</label>
+            <input id="steps" type="number" min="1" max="8" step="1">
+          </div>
+        </div>
+
+        <div class="buttons">
+          <button class="primary" id="apply">Apply</button>
+          <button id="raw">Raw</button>
+          <button id="processed">Processed</button>
+          <button class="secondary" id="randomSeed">Random Seed</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Status</h2>
+        <dl>
+          <dt>Camera</dt><dd id="cameraReady">-</dd>
+          <dt>Model</dt><dd id="modelReady">-</dd>
+          <dt>Resolution</dt><dd id="resolution">-</dd>
+          <dt>Camera FPS</dt><dd id="cameraFps">-</dd>
+          <dt>Display FPS</dt><dd id="displayFps">-</dd>
+          <dt>Diffusion</dt><dd id="diffusionMs">-</dd>
+          <dt>Diffusion FPS</dt><dd id="diffusionFps">-</dd>
+          <dt>OSC Port</dt><dd id="oscPort">-</dd>
+          <dt>HTTP Port</dt><dd id="httpPort">-</dd>
+          <dt>Error</dt><dd id="lastError" class="error">-</dd>
+        </dl>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let applyingRemote = false;
+    let debounceTimer = null;
+
+    function setStatus(text) {
+      $("status").textContent = text;
+    }
+
+    function setPair(rangeId, numberId, value) {
+      $(rangeId).value = value;
+      $(numberId).value = value;
+    }
+
+    async function postState(update) {
+      const res = await fetch("/api/state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(update)
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }
+
+    function collectState() {
+      return {
+        prompt: $("prompt").value,
+        strength: Number($("strength").value),
+        blend: Number($("blend").value),
+        seed: Number($("seed").value),
+        steps: Number($("steps").value)
+      };
+    }
+
+    async function apply(update = collectState()) {
+      try {
+        const state = await postState(update);
+        render(state, true);
+        setStatus("Updated");
+      } catch (err) {
+        setStatus(`Update failed: ${err.message}`);
+      }
+    }
+
+    function debounceApply(update) {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => apply(update), 120);
+    }
+
+    function render(state, keepPromptFocus = false) {
+      applyingRemote = true;
+      const controls = state.controls;
+      if (!(keepPromptFocus && document.activeElement === $("prompt"))) {
+        $("prompt").value = controls.prompt;
+      }
+      setPair("strength", "strengthNumber", controls.strength);
+      setPair("blend", "blendNumber", controls.blend);
+      $("seed").value = controls.seed;
+      $("steps").value = controls.steps;
+
+      $("cameraReady").textContent = state.status.camera_ready ? "Ready" : "Waiting";
+      $("modelReady").textContent = state.status.model_ready ? "Ready" : "Loading";
+      $("resolution").textContent = `${state.config.width} x ${state.config.height}`;
+      $("cameraFps").textContent = state.stats.camera_fps.toFixed(2);
+      $("displayFps").textContent = state.stats.display_fps.toFixed(2);
+      $("diffusionMs").textContent = `${state.stats.diffusion_ms.toFixed(1)} ms`;
+      $("diffusionFps").textContent = state.stats.diffusion_fps.toFixed(2);
+      $("oscPort").textContent = state.config.osc_port;
+      $("httpPort").textContent = state.config.http_port;
+      $("lastError").textContent = state.status.last_error || "-";
+      applyingRemote = false;
+    }
+
+    async function poll() {
+      try {
+        const res = await fetch("/api/state");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        render(await res.json());
+        setStatus("Connected");
+      } catch (err) {
+        setStatus(`Disconnected: ${err.message}`);
+      }
+    }
+
+    $("apply").addEventListener("click", () => apply());
+    $("raw").addEventListener("click", () => apply({ blend: 0 }));
+    $("processed").addEventListener("click", () => apply({ blend: 1 }));
+    $("randomSeed").addEventListener("click", () => {
+      const seed = Math.floor(Math.random() * 2147483647);
+      $("seed").value = seed;
+      apply({ seed });
+    });
+
+    [["strength", "strengthNumber"], ["blend", "blendNumber"]].forEach(([rangeId, numberId]) => {
+      $(rangeId).addEventListener("input", () => {
+        if (applyingRemote) return;
+        $(numberId).value = $(rangeId).value;
+        debounceApply({ [rangeId]: Number($(rangeId).value) });
+      });
+      $(numberId).addEventListener("input", () => {
+        if (applyingRemote) return;
+        $(rangeId).value = $(numberId).value;
+        debounceApply({ [rangeId]: Number($(numberId).value) });
+      });
+    });
+
+    $("seed").addEventListener("change", () => apply({ seed: Number($("seed").value) }));
+    $("steps").addEventListener("change", () => apply({ steps: Number($("steps").value) }));
+
+    poll();
+    setInterval(poll, 1000);
+  </script>
+</body>
+</html>

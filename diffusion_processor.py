@@ -21,8 +21,6 @@ def build_pipe(local_files_only):
     base_model = "stabilityai/sdxl-turbo"
     vae_model = "madebyollin/taesdxl"
 
-    local_files_only = False
-
     pipe = AutoPipelineForImage2Image.from_pretrained(
         base_model,
         torch_dtype=torch.float16,
@@ -126,7 +124,7 @@ class DiffusionProcessor:
         with torch.cuda.device(self.device):
             strength = min(max(1 / num_inference_steps, strength), 1)
             if seed is not None:
-                self.generator = torch.Generator().manual_seed(seed)
+                self.generator = torch.Generator(device=self.device).manual_seed(seed)
             kwargs = {}
             if self.compel is not None:
                 conditioning, pooled = self.meta_embed_prompt(prompt)
@@ -140,14 +138,15 @@ class DiffusionProcessor:
                 kwargs["prompt"] = [prompt] * len(images)
                 kwargs["guidance_scale"] = 0
 
-            result = self.pipe(
-                image=images,
-                generator=self.generator,
-                num_inference_steps=num_inference_steps,
-                strength=strength,
-                output_type="np",
-                **kwargs
-            ).images
+            with torch.inference_mode():
+                result = self.pipe(
+                    image=images,
+                    generator=self.generator,
+                    num_inference_steps=num_inference_steps,
+                    strength=strength,
+                    output_type="np",
+                    **kwargs
+                ).images
             return result
 
     def __call__(self, imgs, prompt):
