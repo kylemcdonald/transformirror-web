@@ -215,62 +215,62 @@
     <div class="layout">
       <section>
         <h2>Effect</h2>
-        <label for="prompt">Prompt</label>
-        <textarea id="prompt" spellcheck="false"></textarea>
+        <label for="prompt" title='OSC: /prompt "a psychedelic landscape"'>Prompt</label>
+        <textarea id="prompt" spellcheck="false" title='OSC: /prompt "a psychedelic landscape"'></textarea>
 
         <div class="row">
           <div>
-            <label for="strength">Strength</label>
-            <input id="strength" type="range" min="0" max="1" step="0.01">
+            <label for="strength" title="OSC: /strength 0.7">Strength</label>
+            <input id="strength" type="range" min="0" max="1" step="0.01" title="OSC: /strength 0.7">
           </div>
-          <input id="strengthNumber" type="number" min="0" max="1" step="0.01">
+          <input id="strengthNumber" type="number" min="0" max="1" step="0.01" title="OSC: /strength 0.7">
         </div>
 
         <div class="row">
           <div>
-            <label for="blend">Blend</label>
-            <input id="blend" type="range" min="0" max="1" step="0.01">
+            <label for="blend" title="OSC: /blend 0.5, or /passthrough true for raw input">Blend</label>
+            <input id="blend" type="range" min="0" max="1" step="0.01" title="OSC: /blend 0.5, or /passthrough true for raw input">
           </div>
-          <input id="blendNumber" type="number" min="0" max="1" step="0.01">
+          <input id="blendNumber" type="number" min="0" max="1" step="0.01" title="OSC: /blend 0.5, or /passthrough true for raw input">
         </div>
 
         <div class="field">
-          <label for="width">Width</label>
-          <input id="width" type="number" min="32" max="1280" step="32">
+          <label for="width" title="OSC: /width 1024, or /resolution 1024 512">Width</label>
+          <input id="width" type="number" min="32" max="1280" step="32" title="OSC: /width 1024, or /resolution 1024 512">
         </div>
 
         <div class="field">
-          <label for="height">Height</label>
-          <input id="height" type="number" min="32" max="1280" step="32">
+          <label for="height" title="OSC: /height 512, or /resolution 1024 512">Height</label>
+          <input id="height" type="number" min="32" max="1280" step="32" title="OSC: /height 512, or /resolution 1024 512">
         </div>
 
         <div class="buttons">
-          <button id="res1280x720">1280 x 720</button>
-          <button id="res1280x640">1280 x 640</button>
-          <button id="res1024x512">1024 x 512</button>
-          <button id="res1024x1024">1024 x 1024</button>
-          <button id="res768x768">768 x 768</button>
-          <button id="res512x512">512 x 512</button>
+          <button id="res1280x720" title="OSC: /resolution 1280 720">1280 x 720</button>
+          <button id="res1280x640" title="OSC: /resolution 1280 640">1280 x 640</button>
+          <button id="res1024x512" title="OSC: /resolution 1024 512">1024 x 512</button>
+          <button id="res1024x1024" title="OSC: /resolution 1024 1024">1024 x 1024</button>
+          <button id="res768x768" title="OSC: /resolution 768 768">768 x 768</button>
+          <button id="res512x512" title="OSC: /resolution 512 512">512 x 512</button>
         </div>
 
         <div class="field">
-          <label for="seed">Seed</label>
-          <input id="seed" type="number" step="1">
+          <label for="seed" title="OSC: /seed 42">Seed</label>
+          <input id="seed" type="number" step="1" title="OSC: /seed 42">
         </div>
 
         <div class="row">
           <div>
-            <label for="steps">Steps</label>
-            <input id="steps" type="range" min="2" max="8" step="1">
+            <label for="steps" title="OSC: /steps 2">Steps</label>
+            <input id="steps" type="range" min="2" max="8" step="1" title="OSC: /steps 2">
           </div>
-          <input id="stepsNumber" type="number" min="2" max="8" step="1">
+          <input id="stepsNumber" type="number" min="2" max="8" step="1" title="OSC: /steps 2">
         </div>
 
         <div class="buttons">
           <button class="primary" id="apply">Apply</button>
-          <button id="raw">Raw</button>
-          <button id="processed">Processed</button>
-          <button class="secondary" id="randomSeed">Random Seed</button>
+          <button id="raw" title="OSC: /passthrough true, or /blend 0">Raw</button>
+          <button id="processed" title="OSC: /passthrough false, or /blend 1">Processed</button>
+          <button class="secondary" id="randomSeed" title="OSC: /seed 123456">Random Seed</button>
         </div>
       </section>
 
