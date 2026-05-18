@@ -148,7 +148,7 @@ Supported addresses:
 /resolution    string        # e.g. "1024x512"
 /width         int           # updates width, keeping current height
 /height        int           # updates height, keeping current width
-/steps         int 1..8
+/steps         int 2..8
 /screenshot    string path
 ```
 

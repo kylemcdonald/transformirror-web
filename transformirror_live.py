@@ -146,7 +146,7 @@ class RuntimeState:
         self.seed = int(config["seed"])
         self.strength = float(config["strength"])
         self.blend = float(config["blend"])
-        self.steps = int(config["steps"])
+        self.steps = int(clamp(int(config["steps"]), 2, 8))
 
         self.raw_frame = None
         self.raw_frame_id = 0
@@ -155,6 +155,7 @@ class RuntimeState:
 
         self.model_ready = False
         self.camera_ready = False
+        self.resolution_changing = False
         self.last_error = ""
         self.camera_fps = 0.0
         self.display_fps = 0.0
@@ -234,6 +235,7 @@ class RuntimeState:
             generation = self.resolution_generation
             self.model_ready = False
             self.camera_ready = False
+            self.resolution_changing = True
             self.diffusion_ms = 0.0
             self.diffusion_fps = 0.0
             self.last_frame_age_ms = 0.0
@@ -261,6 +263,11 @@ class RuntimeState:
         with self.lock:
             self.last_error = ""
 
+    def mark_resolution_stable(self, generation):
+        with self.lock:
+            if generation == self.resolution_generation:
+                self.resolution_changing = False
+
     def update_controls(self, **updates):
         changed = {}
         resolution = self.parse_resolution_update(updates)
@@ -281,7 +288,7 @@ class RuntimeState:
                 self.blend = clamp(float(updates["blend"]), 0.0, 1.0)
                 changed["blend"] = self.blend
             if "steps" in updates and updates["steps"] is not None:
-                self.steps = int(clamp(int(updates["steps"]), 1, 8))
+                self.steps = int(clamp(int(updates["steps"]), 2, 8))
                 changed["steps"] = self.steps
         if changed:
             print(f"controls updated: {changed}", flush=True)
@@ -310,6 +317,7 @@ class RuntimeState:
                 "status": {
                     "model_ready": self.model_ready,
                     "camera_ready": self.camera_ready,
+                    "resolution_changing": self.resolution_changing,
                     "last_error": self.last_error,
                     "uptime_s": round(time.time() - self.started_at, 1),
                 },
@@ -697,6 +705,7 @@ class InferenceThread(threading.Thread):
             now = time.perf_counter()
             if now - last_t >= 2.0:
                 self.state.diffusion_fps = (count - last_count) / (now - last_t)
+                self.state.mark_resolution_stable(active_generation)
                 last_count = count
                 last_t = now
                 print(

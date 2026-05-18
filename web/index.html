@@ -114,6 +114,10 @@
       margin: 14px 0;
     }
 
+    .field {
+      margin: 14px 0;
+    }
+
     input[type="range"] {
       width: 100%;
       accent-color: var(--accent);
@@ -154,20 +158,37 @@
       transform: translateY(1px);
     }
 
-    dl {
+    .status-grid {
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 9px 14px;
       margin: 0;
     }
 
-    dt {
+    .status-group {
+      grid-column: 1 / -1;
+      border-top: 1px solid var(--line);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 750;
+      margin-top: 6px;
+      padding-top: 10px;
+      text-transform: uppercase;
+    }
+
+    .status-group:first-child {
+      border-top: 0;
+      margin-top: 0;
+      padding-top: 0;
+    }
+
+    .status-label {
       color: var(--muted);
     }
 
-    dd {
-      margin: 0;
+    .status-value {
       font-variant-numeric: tabular-nums;
+      text-align: right;
     }
 
     .error {
@@ -213,15 +234,14 @@
           <input id="blendNumber" type="number" min="0" max="1" step="0.01">
         </div>
 
-        <div class="row">
-          <div>
-            <label for="width">Width</label>
-            <input id="width" type="number" min="32" max="1280" step="32">
-          </div>
-          <div>
-            <label for="height">Height</label>
-            <input id="height" type="number" min="32" max="1280" step="32">
-          </div>
+        <div class="field">
+          <label for="width">Width</label>
+          <input id="width" type="number" min="32" max="1280" step="32">
+        </div>
+
+        <div class="field">
+          <label for="height">Height</label>
+          <input id="height" type="number" min="32" max="1280" step="32">
         </div>
 
         <div class="buttons">
@@ -233,15 +253,17 @@
           <button id="res512x512">512 x 512</button>
         </div>
 
+        <div class="field">
+          <label for="seed">Seed</label>
+          <input id="seed" type="number" step="1">
+        </div>
+
         <div class="row">
           <div>
-            <label for="seed">Seed</label>
-            <input id="seed" type="number" step="1">
-          </div>
-          <div>
             <label for="steps">Steps</label>
-            <input id="steps" type="number" min="1" max="8" step="1">
+            <input id="steps" type="range" min="2" max="8" step="1">
           </div>
+          <input id="stepsNumber" type="number" min="2" max="8" step="1">
         </div>
 
         <div class="buttons">
@@ -254,21 +276,30 @@
 
       <section>
         <h2>Status</h2>
-        <dl>
-          <dt>Camera</dt><dd id="cameraReady">-</dd>
-          <dt>Model</dt><dd id="modelReady">-</dd>
-          <dt>Resolution</dt><dd id="resolution">-</dd>
-          <dt>Display</dt><dd id="displayResolution">-</dd>
-          <dt>Camera Mode</dt><dd id="cameraMode">-</dd>
-          <dt>Camera Crop</dt><dd id="cameraCrop">-</dd>
-          <dt>Camera FPS</dt><dd id="cameraFps">-</dd>
-          <dt>Display FPS</dt><dd id="displayFps">-</dd>
-          <dt>Diffusion</dt><dd id="diffusionMs">-</dd>
-          <dt>Diffusion FPS</dt><dd id="diffusionFps">-</dd>
-          <dt>OSC Port</dt><dd id="oscPort">-</dd>
-          <dt>HTTP Port</dt><dd id="httpPort">-</dd>
-          <dt>Error</dt><dd id="lastError" class="error">-</dd>
-        </dl>
+        <div class="status-grid">
+          <div class="status-group">Camera</div>
+          <div class="status-label">Status</div><div class="status-value" id="cameraReady">-</div>
+          <div class="status-label">Mode</div><div class="status-value" id="cameraMode">-</div>
+          <div class="status-label">Crop</div><div class="status-value" id="cameraCrop">-</div>
+          <div class="status-label">FPS</div><div class="status-value" id="cameraFps">-</div>
+
+          <div class="status-group">Diffusion</div>
+          <div class="status-label">Status</div><div class="status-value" id="modelReady">-</div>
+          <div class="status-label">Resolution</div><div class="status-value" id="resolution">-</div>
+          <div class="status-label">Time</div><div class="status-value" id="diffusionMs">-</div>
+          <div class="status-label">FPS</div><div class="status-value" id="diffusionFps">-</div>
+
+          <div class="status-group">Network</div>
+          <div class="status-label">HTTP Port</div><div class="status-value" id="httpPort">-</div>
+          <div class="status-label">OSC Port</div><div class="status-value" id="oscPort">-</div>
+
+          <div class="status-group">Display</div>
+          <div class="status-label">Resolution</div><div class="status-value" id="displayResolution">-</div>
+          <div class="status-label">FPS</div><div class="status-value" id="displayFps">-</div>
+
+          <div class="status-group">Error</div>
+          <div class="status-label">Last</div><div class="status-value error" id="lastError">-</div>
+        </div>
       </section>
     </div>
   </main>
@@ -335,10 +366,12 @@
       $("width").value = state.config.width;
       $("height").value = state.config.height;
       $("seed").value = controls.seed;
-      $("steps").value = controls.steps;
+      setPair("steps", "stepsNumber", controls.steps);
+
+      const changingSize = state.status.resolution_changing && state.stats.diffusion_fps === 0;
 
       $("cameraReady").textContent = state.status.camera_ready ? "Ready" : "Waiting";
-      $("modelReady").textContent = state.status.model_ready ? "Ready" : "Loading";
+      $("modelReady").textContent = changingSize ? "Changing size" : (state.status.model_ready ? "Ready" : "Loading");
       $("resolution").textContent = `${state.config.width} x ${state.config.height}`;
       $("displayResolution").textContent = `${state.stats.display_width} x ${state.stats.display_height}`;
       $("cameraMode").textContent = `${state.stats.camera_source_width} x ${state.stats.camera_source_height}`;
@@ -346,7 +379,7 @@
       $("cameraFps").textContent = state.stats.camera_fps.toFixed(2);
       $("displayFps").textContent = state.stats.display_fps.toFixed(2);
       $("diffusionMs").textContent = `${state.stats.diffusion_ms.toFixed(1)} ms`;
-      $("diffusionFps").textContent = state.stats.diffusion_fps.toFixed(2);
+      $("diffusionFps").textContent = changingSize ? "Changing size" : state.stats.diffusion_fps.toFixed(2);
       $("oscPort").textContent = state.config.osc_port;
       $("httpPort").textContent = state.config.http_port;
       $("lastError").textContent = state.status.last_error || "-";
@@ -379,7 +412,7 @@
       apply({ seed });
     });
 
-    [["strength", "strengthNumber"], ["blend", "blendNumber"]].forEach(([rangeId, numberId]) => {
+    [["strength", "strengthNumber"], ["blend", "blendNumber"], ["steps", "stepsNumber"]].forEach(([rangeId, numberId]) => {
       $(rangeId).addEventListener("input", () => {
         if (applyingRemote) return;
         $(numberId).value = $(rangeId).value;
@@ -393,7 +426,6 @@
     });
 
     $("seed").addEventListener("change", () => apply({ seed: Number($("seed").value) }));
-    $("steps").addEventListener("change", () => apply({ steps: Number($("steps").value) }));
     $("width").addEventListener("change", () => apply({
       width: Number($("width").value),
       height: Number($("height").value)
