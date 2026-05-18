@@ -258,6 +258,7 @@
           <dt>Camera</dt><dd id="cameraReady">-</dd>
           <dt>Model</dt><dd id="modelReady">-</dd>
           <dt>Resolution</dt><dd id="resolution">-</dd>
+          <dt>Display</dt><dd id="displayResolution">-</dd>
           <dt>Camera Mode</dt><dd id="cameraMode">-</dd>
           <dt>Camera Crop</dt><dd id="cameraCrop">-</dd>
           <dt>Camera FPS</dt><dd id="cameraFps">-</dd>
@@ -339,6 +340,7 @@
       $("cameraReady").textContent = state.status.camera_ready ? "Ready" : "Waiting";
       $("modelReady").textContent = state.status.model_ready ? "Ready" : "Loading";
       $("resolution").textContent = `${state.config.width} x ${state.config.height}`;
+      $("displayResolution").textContent = `${state.stats.display_width} x ${state.stats.display_height}`;
       $("cameraMode").textContent = `${state.stats.camera_source_width} x ${state.stats.camera_source_height}`;
       $("cameraCrop").textContent = `${state.stats.camera_crop_width} x ${state.stats.camera_crop_height}`;
       $("cameraFps").textContent = state.stats.camera_fps.toFixed(2);

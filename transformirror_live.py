@@ -326,6 +326,8 @@ class RuntimeState:
                     "camera_source_height": self.camera_source_height,
                     "camera_crop_width": self.camera_crop_width,
                     "camera_crop_height": self.camera_crop_height,
+                    "display_width": self.display_width,
+                    "display_height": self.display_height,
                     "resolution_generation": self.resolution_generation,
                 },
             }
