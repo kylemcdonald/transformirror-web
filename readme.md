@@ -8,8 +8,8 @@ The native runtime is intended for live video-filter use:
 
 * webcam input
 * fullscreen native display
-* default `1280x720` processing, configurable down to `1024x576`
-* OSC control for prompt, seed, strength, blend, passthrough, steps, and screenshots
+* default `1280x704` processing, configurable at runtime on a 32-pixel grid up to `1280` per dimension
+* OSC control for prompt, seed, strength, blend, passthrough, resolution, steps, and screenshots
 * HTTP API and browser control frontend
 * no automatic playback
 * no automatic prompt cycling
@@ -54,7 +54,7 @@ Edit `live_config.json` if needed. Important defaults:
 ```
 {
   "width": 1280,
-  "height": 720,
+  "height": 704,
   "camera_device": "/dev/video0",
   "camera_backend": "ffmpeg",
   "camera_fps": 30,
@@ -71,7 +71,9 @@ Start the app:
 ./run-transformirror.sh
 ```
 
-The first launch downloads `stabilityai/sdxl-turbo` and `madebyollin/taesdxl`. After warmup, a 4090 should process `1280x720` frames in roughly 65-70 ms with the default two-step SDXL Turbo settings.
+The first launch downloads `stabilityai/sdxl-turbo` and `madebyollin/taesdxl`. After warmup, a 4090 should process `1280x704` frames in roughly 65-70 ms with the default two-step SDXL Turbo settings.
+
+Diffusion resolution can be changed live. Incoming width and height values are clamped down to multiples of 32 and to a maximum of `1280`. The selected resolution is persisted to `live_config.json` and reused on the next startup. The camera runs at the smallest configured capture mode that can provide a centered crop at least as large as the diffusion resolution; for example, `1280x640` uses a `1280x720` camera mode with a centered `1280x640` crop, and `1024x512` uses a centered `1280x640` crop resized to `1024x512`.
 
 ### Systemd service
 
@@ -114,6 +116,14 @@ curl -X POST http://localhost:8080/api/state \
   -d '{"prompt":"a neon mirror portrait","seed":42,"strength":0.7,"blend":0.5}'
 ```
 
+Change resolution:
+
+```
+curl -X POST http://localhost:8080/api/resolution \
+  -H 'Content-Type: application/json' \
+  -d '{"width":1024,"height":512}'
+```
+
 Save the currently composed display frame:
 
 ```
@@ -134,6 +144,10 @@ Supported addresses:
 /strength      float 0..1
 /blend         float 0..1    # 0 = raw webcam, 1 = processed output
 /passthrough   bool          # true = raw webcam, false = processed output
+/resolution    int int       # width height, clamped to 32-pixel steps <= 1280
+/resolution    string        # e.g. "1024x512"
+/width         int           # updates width, keeping current height
+/height        int           # updates height, keeping current width
 /steps         int 1..8
 /screenshot    string path
 ```
@@ -146,6 +160,9 @@ Namespaced versions also work:
 /transformirror/strength
 /transformirror/blend
 /transformirror/passthrough
+/transformirror/resolution
+/transformirror/width
+/transformirror/height
 /transformirror/steps
 /transformirror/screenshot
 ```

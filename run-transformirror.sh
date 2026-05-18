@@ -17,5 +17,13 @@ gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'no
 xset s off s noblank -dpms >/dev/null 2>&1 || true
 xset dpms force on >/dev/null 2>&1 || true
 
+(
+  while true; do
+    xset s off s noblank -dpms >/dev/null 2>&1 || true
+    xset dpms force on >/dev/null 2>&1 || true
+    sleep 30
+  done
+) &
+
 cd "$ROOT_DIR"
 exec "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/transformirror_live.py" --config "$ROOT_DIR/live_config.json" "$@"

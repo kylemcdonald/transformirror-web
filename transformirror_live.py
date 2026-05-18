@@ -21,7 +21,7 @@ from diffusion_processor import DiffusionProcessor
 
 DEFAULT_CONFIG = {
     "width": 1280,
-    "height": 720,
+    "height": 704,
     "camera_device": "/dev/video0",
     "camera_backend": "ffmpeg",
     "camera_fps": 30,
@@ -39,9 +39,81 @@ DEFAULT_CONFIG = {
     "http_port": 8080,
 }
 
+RESOLUTION_STEP = 32
+MAX_RESOLUTION_DIMENSION = 1280
+MIN_RESOLUTION_DIMENSION = 32
+
+CAMERA_MODES = [
+    (1280, 720),
+    (1600, 896),
+    (1920, 1080),
+    (2560, 1440),
+    (3840, 2160),
+    (4096, 2160),
+]
+
 
 def clamp(value, low, high):
     return max(low, min(high, value))
+
+
+def clamp_resolution_dimension(value):
+    value = int(float(value))
+    value = int(clamp(value, MIN_RESOLUTION_DIMENSION, MAX_RESOLUTION_DIMENSION))
+    value = (value // RESOLUTION_STEP) * RESOLUTION_STEP
+    return max(MIN_RESOLUTION_DIMENSION, value)
+
+
+def normalize_resolution(width, height):
+    return clamp_resolution_dimension(width), clamp_resolution_dimension(height)
+
+
+def choose_camera_mode(target_width, target_height):
+    target_aspect = target_width / target_height
+    candidates = []
+    for camera_width, camera_height in CAMERA_MODES:
+        if camera_width / camera_height >= target_aspect:
+            crop_height = camera_height
+            crop_width = int(round(crop_height * target_aspect))
+        else:
+            crop_width = camera_width
+            crop_height = int(round(crop_width / target_aspect))
+
+        if crop_width <= camera_width and crop_height <= camera_height:
+            if crop_width >= target_width and crop_height >= target_height:
+                candidates.append((camera_width * camera_height, camera_width, camera_height))
+
+    if candidates:
+        _, camera_width, camera_height = min(candidates)
+        return camera_width, camera_height
+
+    return CAMERA_MODES[-1]
+
+
+def center_crop_and_resize(frame, target_width, target_height):
+    frame_height, frame_width = frame.shape[:2]
+    target_aspect = target_width / target_height
+    frame_aspect = frame_width / frame_height
+
+    if frame_aspect >= target_aspect:
+        crop_height = frame_height
+        crop_width = int(round(crop_height * target_aspect))
+    else:
+        crop_width = frame_width
+        crop_height = int(round(crop_width / target_aspect))
+
+    crop_width = min(crop_width, frame_width)
+    crop_height = min(crop_height, frame_height)
+    x = max(0, (frame_width - crop_width) // 2)
+    y = max(0, (frame_height - crop_height) // 2)
+    cropped = frame[y : y + crop_height, x : x + crop_width]
+
+    if crop_width == target_width and crop_height == target_height:
+        return cropped.copy(), (crop_width, crop_height)
+
+    interpolation = cv2.INTER_AREA if crop_width >= target_width and crop_height >= target_height else cv2.INTER_LINEAR
+    resized = cv2.resize(cropped, (target_width, target_height), interpolation=interpolation)
+    return resized, (crop_width, crop_height)
 
 
 def parse_camera_device(value):
@@ -56,11 +128,19 @@ def parse_camera_device(value):
 
 
 class RuntimeState:
-    def __init__(self, config):
+    def __init__(self, config, config_path):
         self.config = config
+        self.config_path = config_path
         self.lock = threading.RLock()
         self.frame_lock = threading.RLock()
         self.stop_event = threading.Event()
+
+        width, height = normalize_resolution(config["width"], config["height"])
+        self.config["width"] = width
+        self.config["height"] = height
+        self.width = width
+        self.height = height
+        self.resolution_generation = 0
 
         self.prompt = str(config["prompt"])
         self.seed = int(config["seed"])
@@ -81,8 +161,12 @@ class RuntimeState:
         self.diffusion_ms = 0.0
         self.diffusion_fps = 0.0
         self.last_frame_age_ms = 0.0
-        self.display_width = int(config["width"])
-        self.display_height = int(config["height"])
+        self.camera_source_width = 0
+        self.camera_source_height = 0
+        self.camera_crop_width = 0
+        self.camera_crop_height = 0
+        self.display_width = width
+        self.display_height = height
         self.last_screenshot = ""
         self.started_at = time.time()
 
@@ -96,8 +180,93 @@ class RuntimeState:
                 "steps": self.steps,
             }
 
+    def resolution(self):
+        with self.lock:
+            return self.width, self.height, self.resolution_generation
+
+    def parse_resolution_update(self, updates):
+        width = updates.get("width")
+        height = updates.get("height")
+        resolution = updates.get("resolution")
+
+        if resolution is not None and (width is None or height is None):
+            if isinstance(resolution, str):
+                clean = resolution.lower().replace(",", "x").replace(" ", "")
+                if "x" in clean:
+                    parts = clean.split("x", 1)
+                    width = width if width is not None else parts[0]
+                    height = height if height is not None else parts[1]
+            elif isinstance(resolution, (list, tuple)) and len(resolution) >= 2:
+                width = width if width is not None else resolution[0]
+                height = height if height is not None else resolution[1]
+
+        if width is None and height is None:
+            return None
+
+        with self.lock:
+            current_width = self.width
+            current_height = self.height
+
+        return normalize_resolution(
+            current_width if width is None else width,
+            current_height if height is None else height,
+        )
+
+    def persist_resolution(self):
+        data = dict(self.config)
+        data["width"] = self.width
+        data["height"] = self.height
+        temp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(data, indent=2) + "\n")
+        temp_path.replace(self.config_path)
+
+    def set_resolution(self, width, height):
+        width, height = normalize_resolution(width, height)
+        with self.lock:
+            if width == self.width and height == self.height:
+                return {}
+
+            self.width = width
+            self.height = height
+            self.config["width"] = width
+            self.config["height"] = height
+            self.resolution_generation += 1
+            generation = self.resolution_generation
+            self.model_ready = False
+            self.camera_ready = False
+            self.diffusion_ms = 0.0
+            self.diffusion_fps = 0.0
+            self.last_frame_age_ms = 0.0
+
+            with self.frame_lock:
+                self.raw_frame = None
+                self.processed_frame = None
+                self.raw_frame_id += 1
+                self.processed_frame_id += 1
+
+            self.persist_resolution()
+
+        changed = {"width": width, "height": height, "resolution_generation": generation}
+        print(f"resolution updated: {width}x{height}", flush=True)
+        return changed
+
+    def set_camera_status(self, source_width, source_height, crop_width, crop_height):
+        with self.lock:
+            self.camera_source_width = int(source_width)
+            self.camera_source_height = int(source_height)
+            self.camera_crop_width = int(crop_width)
+            self.camera_crop_height = int(crop_height)
+
+    def clear_error(self):
+        with self.lock:
+            self.last_error = ""
+
     def update_controls(self, **updates):
         changed = {}
+        resolution = self.parse_resolution_update(updates)
+        if resolution is not None:
+            changed.update(self.set_resolution(*resolution))
+
         with self.lock:
             if "prompt" in updates and updates["prompt"] is not None:
                 self.prompt = str(updates["prompt"])
@@ -129,8 +298,8 @@ class RuntimeState:
                     "steps": self.steps,
                 },
                 "config": {
-                    "width": self.config["width"],
-                    "height": self.config["height"],
+                    "width": self.width,
+                    "height": self.height,
                     "camera_device": self.config["camera_device"],
                     "camera_backend": self.config["camera_backend"],
                     "camera_fps": self.config["camera_fps"],
@@ -153,6 +322,11 @@ class RuntimeState:
                     "raw_frame_id": self.raw_frame_id,
                     "processed_frame_id": self.processed_frame_id,
                     "last_screenshot": self.last_screenshot,
+                    "camera_source_width": self.camera_source_width,
+                    "camera_source_height": self.camera_source_height,
+                    "camera_crop_width": self.camera_crop_width,
+                    "camera_crop_height": self.camera_crop_height,
+                    "resolution_generation": self.resolution_generation,
                 },
             }
 
@@ -218,13 +392,13 @@ class CameraThread(threading.Thread):
         self.state = state
         self.config = state.config
 
-    def open_camera(self):
+    def open_camera(self, camera_width, camera_height):
         device = parse_camera_device(self.config["camera_device"])
         self.configure_v4l2(device)
         cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(self.config["width"]))
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self.config["height"]))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, camera_width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_height)
         cap.set(cv2.CAP_PROP_FPS, int(self.config["camera_fps"]))
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return cap
@@ -239,11 +413,9 @@ class CameraThread(threading.Thread):
             stderr=subprocess.DEVNULL,
         )
 
-    def open_ffmpeg(self):
+    def open_ffmpeg(self, camera_width, camera_height):
         device = str(self.config["camera_device"])
         self.configure_v4l2(device)
-        width = int(self.config["width"])
-        height = int(self.config["height"])
         fps = int(self.config["camera_fps"])
         cmd = [
             "ffmpeg",
@@ -261,7 +433,7 @@ class CameraThread(threading.Thread):
             "-framerate",
             str(fps),
             "-video_size",
-            f"{width}x{height}",
+            f"{camera_width}x{camera_height}",
             "-i",
             device,
             "-an",
@@ -275,25 +447,44 @@ class CameraThread(threading.Thread):
         return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     def run_ffmpeg(self):
-        width = int(self.config["width"])
-        height = int(self.config["height"])
         mirror = bool(self.config["mirror"])
-        frame_bytes = width * height * 3
+        target_width, target_height, generation = self.state.resolution()
+        camera_width, camera_height = choose_camera_mode(target_width, target_height)
+        frame_bytes = camera_width * camera_height * 3
         proc = None
         count = 0
         last_count = 0
         last_t = time.perf_counter()
 
         while not self.state.stop_event.is_set():
+            current_width, current_height, current_generation = self.state.resolution()
+            current_camera_width, current_camera_height = choose_camera_mode(current_width, current_height)
+            if current_generation != generation or (current_camera_width, current_camera_height) != (camera_width, camera_height):
+                generation = current_generation
+                target_width = current_width
+                target_height = current_height
+                camera_width = current_camera_width
+                camera_height = current_camera_height
+                frame_bytes = camera_width * camera_height * 3
+                if proc is not None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    proc = None
+
             if proc is None or proc.poll() is not None:
                 if proc is not None:
                     proc.kill()
                 try:
-                    proc = self.open_ffmpeg()
+                    proc = self.open_ffmpeg(camera_width, camera_height)
                     self.state.camera_ready = True
+                    self.state.clear_error()
                     print(
                         f"ffmpeg camera opened {self.config['camera_device']} "
-                        f"{width}x{height}@{self.config['camera_fps']}",
+                        f"{camera_width}x{camera_height}@{self.config['camera_fps']} "
+                        f"for {target_width}x{target_height}",
                         flush=True,
                     )
                 except Exception as exc:
@@ -311,9 +502,11 @@ class CameraThread(threading.Thread):
                 time.sleep(0.2)
                 continue
 
-            frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(height, width, 3)
+            frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(camera_height, camera_width, 3)
             if mirror:
                 frame = cv2.flip(frame, 1)
+            frame, crop_size = center_crop_and_resize(frame, target_width, target_height)
+            self.state.set_camera_status(camera_width, camera_height, crop_size[0], crop_size[1])
 
             with self.state.frame_lock:
                 self.state.raw_frame = frame.copy()
@@ -338,28 +531,42 @@ class CameraThread(threading.Thread):
             self.run_ffmpeg()
             return
 
-        width = int(self.config["width"])
-        height = int(self.config["height"])
         mirror = bool(self.config["mirror"])
+        target_width, target_height, generation = self.state.resolution()
+        camera_width, camera_height = choose_camera_mode(target_width, target_height)
         cap = None
         count = 0
         last_count = 0
         last_t = time.perf_counter()
 
         while not self.state.stop_event.is_set():
+            current_width, current_height, current_generation = self.state.resolution()
+            current_camera_width, current_camera_height = choose_camera_mode(current_width, current_height)
+            if current_generation != generation or (current_camera_width, current_camera_height) != (camera_width, camera_height):
+                generation = current_generation
+                target_width = current_width
+                target_height = current_height
+                camera_width = current_camera_width
+                camera_height = current_camera_height
+                if cap is not None:
+                    cap.release()
+                    cap = None
+
             if cap is None or not cap.isOpened():
                 if cap is not None:
                     cap.release()
-                cap = self.open_camera()
+                cap = self.open_camera(camera_width, camera_height)
                 if not cap.isOpened():
                     self.state.camera_ready = False
                     self.state.set_error(f"camera unavailable: {self.config['camera_device']}")
                     time.sleep(1.0)
                     continue
                 self.state.camera_ready = True
+                self.state.clear_error()
                 print(
                     f"camera opened {self.config['camera_device']} "
-                    f"{width}x{height}@{self.config['camera_fps']}",
+                    f"{camera_width}x{camera_height}@{self.config['camera_fps']} "
+                    f"for {target_width}x{target_height}",
                     flush=True,
                 )
 
@@ -372,11 +579,11 @@ class CameraThread(threading.Thread):
                 time.sleep(0.2)
                 continue
 
-            if frame.shape[1] != width or frame.shape[0] != height:
-                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
             if mirror:
                 frame = cv2.flip(frame, 1)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame, crop_size = center_crop_and_resize(frame, target_width, target_height)
+            self.state.set_camera_status(camera_width, camera_height, crop_size[0], crop_size[1])
 
             with self.state.frame_lock:
                 self.state.raw_frame = frame
@@ -400,29 +607,61 @@ class InferenceThread(threading.Thread):
         self.config = state.config
 
     def run(self):
-        width = int(self.config["width"])
-        height = int(self.config["height"])
-        warmup = f"1x{height}x{width}x3"
-        print(f"loading diffusion model for {width}x{height}", flush=True)
-
-        try:
-            processor = DiffusionProcessor(warmup=warmup, local_files_only=True, gpu_id=0)
-        except Exception as exc:
-            self.state.set_error(f"model load failed: {exc}")
-            return
-
-        self.state.model_ready = True
+        processor = None
+        active_generation = None
+        width = None
+        height = None
         last_raw_id = -1
         count = 0
         last_count = 0
         last_t = time.perf_counter()
 
         while not self.state.stop_event.is_set():
+            current_width, current_height, current_generation = self.state.resolution()
+            if processor is None or current_generation != active_generation:
+                if processor is not None:
+                    del processor
+                    processor = None
+                    try:
+                        import torch
+
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+
+                width = current_width
+                height = current_height
+                active_generation = current_generation
+                last_raw_id = -1
+                count = 0
+                last_count = 0
+                last_t = time.perf_counter()
+                with self.state.lock:
+                    self.state.model_ready = False
+                    self.state.diffusion_fps = 0.0
+                    self.state.diffusion_ms = 0.0
+
+                warmup = f"1x{height}x{width}x3"
+                print(f"loading diffusion model for {width}x{height}", flush=True)
+                try:
+                    processor = DiffusionProcessor(warmup=warmup, local_files_only=True, gpu_id=0)
+                except Exception as exc:
+                    self.state.set_error(f"model load failed for {width}x{height}: {exc}")
+                    time.sleep(1.0)
+                    continue
+
+                self.state.model_ready = True
+                self.state.clear_error()
+
             with self.state.frame_lock:
                 raw_id = self.state.raw_frame_id
                 raw = None if self.state.raw_frame is None else self.state.raw_frame.copy()
 
             if raw is None or raw_id == last_raw_id:
+                time.sleep(0.002)
+                continue
+
+            if raw.shape[1] != width or raw.shape[0] != height:
                 time.sleep(0.002)
                 continue
 
@@ -480,15 +719,21 @@ class OscThread(threading.Thread):
             "/strength",
             "/blend",
             "/passthrough",
+            "/resolution",
             "/screenshot",
             "/steps",
+            "/width",
+            "/height",
             "/transformirror/prompt",
             "/transformirror/seed",
             "/transformirror/strength",
             "/transformirror/blend",
             "/transformirror/passthrough",
+            "/transformirror/resolution",
             "/transformirror/screenshot",
             "/transformirror/steps",
+            "/transformirror/width",
+            "/transformirror/height",
         ):
             dispatcher.map(address, self.handle)
 
@@ -519,6 +764,15 @@ class OscThread(threading.Thread):
             elif key == "passthrough":
                 enabled = str(value).lower() in ("1", "true", "yes", "on")
                 self.state.update_controls(blend=0.0 if enabled else 1.0)
+            elif key == "resolution":
+                if len(args) >= 2:
+                    self.state.update_controls(width=args[0], height=args[1])
+                else:
+                    self.state.update_controls(resolution=value)
+            elif key == "width":
+                self.state.update_controls(width=value)
+            elif key == "height":
+                self.state.update_controls(height=value)
             elif key == "screenshot":
                 self.state.save_screenshot(str(value))
             elif key == "steps":
@@ -541,8 +795,17 @@ def create_http_app(state):
 
     @app.post("/api/state")
     def set_state(payload: dict = Body(...)):
-        allowed = {k: payload[k] for k in ("prompt", "seed", "strength", "blend", "steps") if k in payload}
+        allowed = {
+            k: payload[k]
+            for k in ("prompt", "seed", "strength", "blend", "steps", "width", "height", "resolution")
+            if k in payload
+        }
         state.update_controls(**allowed)
+        return state.snapshot()
+
+    @app.post("/api/resolution")
+    def set_resolution(payload: dict = Body(...)):
+        state.update_controls(**payload)
         return state.snapshot()
 
     @app.post("/api/screenshot")
@@ -577,6 +840,7 @@ class DisplayApp:
         self.last_raw_id = -1
         self.last_processed_id = -1
         self.last_blend = None
+        self.last_generation = -1
         self.draw_count = 0
         self.last_draw_t = time.perf_counter()
 
@@ -611,6 +875,7 @@ class DisplayApp:
             )
 
     def choose_frame(self):
+        width, height, generation = self.state.resolution()
         with self.state.frame_lock:
             raw_id = self.state.raw_frame_id
             processed_id = self.state.processed_frame_id
@@ -622,6 +887,7 @@ class DisplayApp:
             raw_id != self.last_raw_id
             or processed_id != self.last_processed_id
             or blend != self.last_blend
+            or generation != self.last_generation
         )
         if not needs_update or raw is None:
             return None
@@ -629,6 +895,9 @@ class DisplayApp:
         self.last_raw_id = raw_id
         self.last_processed_id = processed_id
         self.last_blend = blend
+        self.last_generation = generation
+        self.width = width
+        self.height = height
 
         if processed is None:
             return raw
@@ -639,19 +908,30 @@ class DisplayApp:
         return cv2.addWeighted(raw, 1.0 - blend, processed, blend, 0)
 
     def update_texture(self, _dt):
+        width, height, generation = self.state.resolution()
+        if generation != self.last_generation and self.texture is not None:
+            self.texture.delete()
+            self.texture = None
+            self.last_generation = generation
+            self.width = width
+            self.height = height
+
         frame = self.choose_frame()
         if frame is None:
             return
+        frame_height, frame_width = frame.shape[:2]
         image = pyglet.image.ImageData(
-            self.width,
-            self.height,
+            frame_width,
+            frame_height,
             "RGB",
             frame.tobytes(),
-            pitch=self.width * 3,
+            pitch=frame_width * 3,
         )
         if self.texture is not None:
             self.texture.delete()
         self.texture = image.get_texture().get_transform(flip_y=True)
+        self.width = frame_width
+        self.height = frame_height
 
     def fitted_rect(self):
         ww, wh = self.window.width, self.window.height
@@ -726,7 +1006,7 @@ def main():
     config = load_config(config_path, args)
     print(f"config: {json.dumps(config, sort_keys=True)}", flush=True)
 
-    state = RuntimeState(config)
+    state = RuntimeState(config, config_path)
 
     def handle_signal(signum, _frame):
         print(f"received signal {signum}; shutting down", flush=True)

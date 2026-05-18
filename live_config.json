@@ -1,6 +1,6 @@
 {
   "width": 1280,
-  "height": 720,
+  "height": 704,
   "camera_device": "/dev/video0",
   "camera_backend": "ffmpeg",
   "camera_fps": 30,

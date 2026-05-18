@@ -215,6 +215,24 @@
 
         <div class="row">
           <div>
+            <label for="width">Width</label>
+            <input id="width" type="number" min="32" max="1280" step="32">
+          </div>
+          <div>
+            <label for="height">Height</label>
+            <input id="height" type="number" min="32" max="1280" step="32">
+          </div>
+        </div>
+
+        <div class="buttons">
+          <button id="res1280">1280 x 704</button>
+          <button id="res1024">1024 x 576</button>
+          <button id="res1024wide">1024 x 512</button>
+          <button id="res896">896 x 512</button>
+        </div>
+
+        <div class="row">
+          <div>
             <label for="seed">Seed</label>
             <input id="seed" type="number" step="1">
           </div>
@@ -238,6 +256,8 @@
           <dt>Camera</dt><dd id="cameraReady">-</dd>
           <dt>Model</dt><dd id="modelReady">-</dd>
           <dt>Resolution</dt><dd id="resolution">-</dd>
+          <dt>Camera Mode</dt><dd id="cameraMode">-</dd>
+          <dt>Camera Crop</dt><dd id="cameraCrop">-</dd>
           <dt>Camera FPS</dt><dd id="cameraFps">-</dd>
           <dt>Display FPS</dt><dd id="displayFps">-</dd>
           <dt>Diffusion</dt><dd id="diffusionMs">-</dd>
@@ -279,6 +299,8 @@
         prompt: $("prompt").value,
         strength: Number($("strength").value),
         blend: Number($("blend").value),
+        width: Number($("width").value),
+        height: Number($("height").value),
         seed: Number($("seed").value),
         steps: Number($("steps").value)
       };
@@ -307,12 +329,16 @@
       }
       setPair("strength", "strengthNumber", controls.strength);
       setPair("blend", "blendNumber", controls.blend);
+      $("width").value = state.config.width;
+      $("height").value = state.config.height;
       $("seed").value = controls.seed;
       $("steps").value = controls.steps;
 
       $("cameraReady").textContent = state.status.camera_ready ? "Ready" : "Waiting";
       $("modelReady").textContent = state.status.model_ready ? "Ready" : "Loading";
       $("resolution").textContent = `${state.config.width} x ${state.config.height}`;
+      $("cameraMode").textContent = `${state.stats.camera_source_width} x ${state.stats.camera_source_height}`;
+      $("cameraCrop").textContent = `${state.stats.camera_crop_width} x ${state.stats.camera_crop_height}`;
       $("cameraFps").textContent = state.stats.camera_fps.toFixed(2);
       $("displayFps").textContent = state.stats.display_fps.toFixed(2);
       $("diffusionMs").textContent = `${state.stats.diffusion_ms.toFixed(1)} ms`;
@@ -337,6 +363,10 @@
     $("apply").addEventListener("click", () => apply());
     $("raw").addEventListener("click", () => apply({ blend: 0 }));
     $("processed").addEventListener("click", () => apply({ blend: 1 }));
+    $("res1280").addEventListener("click", () => apply({ width: 1280, height: 704 }));
+    $("res1024").addEventListener("click", () => apply({ width: 1024, height: 576 }));
+    $("res1024wide").addEventListener("click", () => apply({ width: 1024, height: 512 }));
+    $("res896").addEventListener("click", () => apply({ width: 896, height: 512 }));
     $("randomSeed").addEventListener("click", () => {
       const seed = Math.floor(Math.random() * 2147483647);
       $("seed").value = seed;
@@ -358,6 +388,14 @@
 
     $("seed").addEventListener("change", () => apply({ seed: Number($("seed").value) }));
     $("steps").addEventListener("change", () => apply({ steps: Number($("steps").value) }));
+    $("width").addEventListener("change", () => apply({
+      width: Number($("width").value),
+      height: Number($("height").value)
+    }));
+    $("height").addEventListener("change", () => apply({
+      width: Number($("width").value),
+      height: Number($("height").value)
+    }));
 
     poll();
     setInterval(poll, 1000);
