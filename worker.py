@@ -37,6 +37,9 @@ try:
             # decode the image
             nparr = np.frombuffer(frame_data, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is None:
+                print("dropping frame: could not decode image")
+                continue
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
             processed_img = processor(img, prompt)

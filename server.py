@@ -60,10 +60,12 @@ async def websocket_handler(request):
 
     incoming_client_frames = request.app['incoming_client_frames']
     processed_frames = request.app['processed_frames']
+    request.app['websockets'].add(ws)
 
     try:
         async for msg in ws:
             if msg.type == WSMsgType.BINARY:
+                request.app['last_frame_time'] = time.time()
                 incoming_client_frames.put(msg.data)
                 while not processed_frames.empty():
                     processed_frame = processed_frames.get()
@@ -71,7 +73,7 @@ async def websocket_handler(request):
             elif msg.type == WSMsgType.ERROR:
                 logger.error("WebSocket connection closed with exception %s", ws.exception())
     finally:
-        pass
+        request.app['websockets'].discard(ws)
 
     return ws
 
@@ -107,7 +109,12 @@ async def get_prompts(request):
         return web.Response(status=500, text="Internal server error")
 
 async def health(request):
-    return web.json_response({"status": "ok"})
+    last_frame_time = request.app.get('last_frame_time')
+    return web.json_response({
+        "status": "ok",
+        "clients": len(request.app['websockets']),
+        "seconds_since_last_frame": None if last_frame_time is None else round(time.time() - last_frame_time, 1),
+    })
 
 
 def distribute_loop(app):

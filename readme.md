@@ -80,4 +80,6 @@ cd transformirror-web
 ./setup-runpod.sh
 ```
 
-This installs torch 2.1.0 (CUDA 12.1) with the prebuilt stable-fast wheel into `.venv`, downloads the models into `/workspace/.cache`, and starts one worker per GPU plus the server in tmux sessions (logs in `logs/`). RunPod's proxy provides HTTPS, so open `https://<pod-id>-8443.proxy.runpod.net/` (or `/buffered` for the jitter-buffered frontend).
+This installs the pinned packages from `requirements-runpod.txt` with uv while the models download in parallel (about a minute on a fast pod), then starts one worker per GPU plus the server in tmux sessions (logs in `logs/`) and waits for every GPU to finish warming up. RunPod's proxy provides HTTPS, so open `https://<pod-id>-8443.proxy.runpod.net/` (or `/buffered` for the jitter-buffered frontend). `/health` reports the number of connected clients and seconds since the last frame.
+
+Pods launched by [transformirror-control](https://github.com/kylemcdonald/transformirror-control) run `runpod-bootstrap.sh` at container start, which clones this repo, runs `setup-runpod.sh`, and reports each stage back to the control app.
