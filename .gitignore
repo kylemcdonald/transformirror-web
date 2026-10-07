@@ -1,5 +1,16 @@
 __pycache__
 *.jpg
+*.jpeg
 *.pem
 venv
+.venv
 config.sh
+audio
+*.zip
+*.png
+*.wav
+stable-fast/**
+logs/
+.transformirror-*.pid
+.collect_socket
+.distribute_socket

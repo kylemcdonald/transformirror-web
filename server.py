@@ -2,7 +2,6 @@ import logging
 from aiohttp import web, WSMsgType
 import numpy as np
 import queue
-from diffusion_processor import DiffusionProcessor
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -12,15 +11,48 @@ import zmq
 import os
 import ssl
 import heapq
+import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 output_queue_size = 2
 
+
+def load_ssl_context():
+    cert_path = os.path.join(os.getcwd(), "cert.pem")
+    key_path = os.path.join(os.getcwd(), "key.pem")
+    if not (os.path.exists(cert_path) and os.path.exists(key_path)):
+        logger.info("SSL certificates not found, starting without TLS")
+        return None
+
+    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ssl_context.load_cert_chain(cert_path, key_path)
+    logger.info("Loaded TLS certificate from %s", cert_path)
+    return ssl_context
+
 async def index(request):
     with open("index.html", "r") as f:
         content = f.read()
-    return web.Response(content_type="text/html", text=content)
+    return web.Response(
+        content_type="text/html",
+        text=content,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+async def buffered(request):
+    with open("buffered_frontend.html", "r") as f:
+        content = f.read()
+    return web.Response(
+        content_type="text/html",
+        text=content,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
@@ -55,6 +87,28 @@ async def set_parameters(request):
         return web.Response(status=400, text="No valid parameters provided.")
     
     return web.Response(text="\n".join(response))
+
+async def get_prompts(request):
+    try:
+        # Read the prompts.txt file from the data folder
+        prompts_file_path = os.path.join(os.getcwd(), "data", "prompts.txt")
+        
+        with open(prompts_file_path, "r", encoding="utf-8") as f:
+            prompts = [line.strip() for line in f.readlines() if line.strip()]
+        
+        # Return as JSON list
+        return web.json_response(prompts)
+    
+    except FileNotFoundError:
+        logger.error(f"Prompts file not found at {prompts_file_path}")
+        return web.Response(status=404, text="Prompts file not found")
+    except Exception as e:
+        logger.error(f"Error reading prompts file: {e}")
+        return web.Response(status=500, text="Internal server error")
+
+async def health(request):
+    return web.json_response({"status": "ok"})
+
 
 def distribute_loop(app):
     incoming_client_frames = app['incoming_client_frames']
@@ -143,14 +197,14 @@ if __name__ == '__main__':
     app = web.Application()
     app['websockets'] = set()
     app.router.add_get('/', index)
+    app.router.add_get('/buffered', buffered)
     app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/set', set_parameters)
+    app.router.add_get('/prompts', get_prompts)
+    app.router.add_get('/health', health)
+    app.router.add_static('/audio', path='data/audio', name='audio')
     app.on_shutdown.append(on_shutdown)
     app.on_startup.append(on_startup)
 
-    # Create an SSL context
-    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    ssl_context.load_cert_chain('cert.pem', 'key.pem')
-
-    # Run the app with SSL
+    ssl_context = load_ssl_context()
     web.run_app(app, access_log=None, port=8443, ssl_context=ssl_context)

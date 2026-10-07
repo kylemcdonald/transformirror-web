@@ -69,26 +69,15 @@ http://localhost:8443/set?prompt=your new prompt here
 
 Replace "your new prompt here" with the desired prompt text.
 
-## Installing with uv
-
-```
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv python install 3.10
-uv init && rm main.py && rm README.md
-uv add -r requirements.txt
-source .venv/bin/activate
-```
-
 ## RunPod
+
+Create a pod from `runpod/pytorch:2.1.1-py3.10-cuda12.1.1-devel-ubuntu22.04` with HTTP port `8443` exposed, then:
 
 ```
 cd /workspace
 git clone https://github.com/kylemcdonald/transformirror-web.git
 cd transformirror-web
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-export HF_HOME=/workspace/.cache
-python check_framerate.py
-apt install screen
+./setup-runpod.sh
 ```
+
+This installs torch 2.1.0 (CUDA 12.1) with the prebuilt stable-fast wheel into `.venv`, downloads the models into `/workspace/.cache`, and starts one worker per GPU plus the server in tmux sessions (logs in `logs/`). RunPod's proxy provides HTTPS, so open `https://<pod-id>-8443.proxy.runpod.net/` (or `/buffered` for the jitter-buffered frontend).

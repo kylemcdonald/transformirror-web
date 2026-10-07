@@ -8,24 +8,31 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Transformirror">
   <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: black;
+    }
     body {
       margin: 0;
       padding: 0;
       background-color: black;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      overflow: hidden;
       font-family: Arial, sans-serif;
       position: fixed;
-      width: 100%;
+      inset: 0;
     }
     #remoteVideo {
-      height: 100%;
-      width: auto;
-      max-width: 100%;
+      position: fixed;
+      top: 0;
+      left: 50%;
+      height: 100vh;
+      width: 100vh;
+      max-width: none;
       object-fit: contain;
+      transform: translateX(-50%);
       transition: transform 0.3s ease;
     }
     #controls {
@@ -127,18 +134,27 @@
   </form>
 
   <video id="localVideo" autoplay playsinline muted></video>
+  <audio id="promptAudio" preload="auto"></audio>
 
   <script>
     const quality = 0.5;
+    const remoteSize = 1080;
     let ws, localStream, canvas, ctx, startTime, sendFrameCount = 0, receiveFrameCount = 0,
         bytesSent = 0, bytesReceived = 0, lastUpdateTime, lastBytesSent = 0, lastBytesReceived = 0,
         videoFrameCallbackId, debugInfoVisible = false, isMobile = false, isUsingRearCamera = false;
 
     let lastThirtySendFrames = [], lastThirtyReceiveFrames = [], lastThirtySendBytes = [], lastThirtyReceiveBytes = [];
+    let receiveFrameIntervals = []; // Track intervals between received frames for jitter calculation
     
     let videoElement;
     let showLocalVideo = false;
     let autoConnect = false; // Add this line
+    let promptCycle = false;
+    let prompts = [];
+    let currentPromptIndex = 0;
+    let promptCycleInterval = null;
+    let audioEnabled = false;
+    let autoReloadInterval = null;
 
     async function setup() {
       isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -173,6 +189,31 @@
         document.getElementById('controls').style.display = 'none';
         start();
       }
+
+      // Check for prompt cycling
+      promptCycle = urlParams.get('cycle') === 'true';
+      if (promptCycle) {
+        await loadPromptsAndStartCycling();
+      } else {
+        // Load prompts even when not cycling, for manual prompt submission
+        await loadPrompts();
+      }
+
+      // Set up automatic page reload if autoreload parameter is present
+      const autoreloadParam = urlParams.get('autoreload');
+      if (autoreloadParam) {
+        const reloadSeconds = parseInt(autoreloadParam, 10);
+        if (!isNaN(reloadSeconds) && reloadSeconds > 0) {
+          const reloadMilliseconds = reloadSeconds * 1000;
+          autoReloadInterval = setInterval(() => {
+            console.log(`Auto-reloading page after ${reloadSeconds} seconds`);
+            window.location.reload();
+          }, reloadMilliseconds);
+          console.log(`Auto-reload enabled: page will reload every ${reloadSeconds} seconds`);
+        } else {
+          console.warn('Invalid autoreload parameter. Must be a positive number of seconds.');
+        }
+      }
     }
 
     async function start() {
@@ -200,6 +241,9 @@
         audio: false
       };
 
+      // Audio will be enabled when we first try to play it
+      audioEnabled = true;
+
       try {
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
         isUsingRearCamera = isMobile && selectedDirection === 'environment';
@@ -208,8 +252,8 @@
         const settings = track.getSettings();
 
         canvas = document.createElement('canvas');
-        canvas.width = settings.width;
-        canvas.height = settings.height;
+        canvas.width = remoteSize;
+        canvas.height = remoteSize;
         ctx = canvas.getContext('2d', { willReadFrequently: true });
 
         // Set up the local video display
@@ -224,45 +268,94 @@
         videoElement.playsInline = true;
 
         const remoteCanvas = document.getElementById('remoteVideo');
-        remoteCanvas.width = 1024;
-        remoteCanvas.height = 1024;
+        remoteCanvas.width = remoteSize;
+        remoteCanvas.height = remoteSize;
         const remoteCtx = remoteCanvas.getContext('2d');
 
-        ws = new WebSocket(`wss://${window.location.host}/ws`);
+        // Wait for the video element to be ready before establishing WebSocket connection
+        videoElement.addEventListener('loadedmetadata', () => {
+          // Now that the video stream is ready, establish the WebSocket connection
+          ws = new WebSocket(`wss://${window.location.host}/ws`);
 
-        ws.onopen = () => {
-          document.getElementById('controls').style.display = 'none';
-          startTime = Date.now();
-          requestVideoFrame();
-        };
-
-        ws.onmessage = (event) => {
-          const img = new Image();
-          img.onload = () => {
-            remoteCtx.drawImage(img, 0, 0, 1024, 1024);
-            bytesReceived += event.data.size;
-            lastBytesReceived = event.data.size;
-            receiveFrameCount++;
-
-            const frameInfo = { timestamp: Date.now(), bytes: event.data.size };
-            lastThirtyReceiveFrames.push(frameInfo);
-            lastThirtyReceiveBytes.push(event.data.size);
-
-            if (lastThirtyReceiveFrames.length > 30) {
-              lastThirtyReceiveFrames.shift();
-              lastThirtyReceiveBytes.shift();
+          ws.onopen = () => {
+            document.getElementById('controls').style.display = 'none';
+            startTime = Date.now();
+            requestVideoFrame();
+            
+            // Start prompt cycling if enabled
+            if (promptCycle && prompts.length > 0) {
+              // Start with the random prompt index that was set when prompts were loaded
+              sendPrompt(prompts[currentPromptIndex]);
+              playAudioForPrompt(currentPromptIndex);
+              
+              // Set up the cycling interval (30 seconds)
+              promptCycleInterval = setInterval(() => {
+                currentPromptIndex = (currentPromptIndex + 1) % prompts.length;
+                const nextPrompt = prompts[currentPromptIndex];
+                console.log(`Cycling to prompt ${currentPromptIndex + 1}/${prompts.length}: ${nextPrompt}`);
+                sendPrompt(nextPrompt);
+                playAudioForPrompt(currentPromptIndex);
+              }, 30000); // 30 seconds
             }
-
-            URL.revokeObjectURL(img.src);
           };
-          img.src = URL.createObjectURL(new Blob([event.data], { type: 'image/jpeg' }));
-        };
+
+          ws.onmessage = (event) => {
+            const img = new Image();
+            img.onload = () => {
+              remoteCtx.drawImage(img, 0, 0, remoteCanvas.width, remoteCanvas.height);
+              bytesReceived += event.data.size;
+              lastBytesReceived = event.data.size;
+              receiveFrameCount++;
+
+              const currentTime = Date.now();
+              const frameInfo = { timestamp: currentTime, bytes: event.data.size };
+              lastThirtyReceiveFrames.push(frameInfo);
+              lastThirtyReceiveBytes.push(event.data.size);
+
+              // Calculate frame interval for jitter
+              if (lastThirtyReceiveFrames.length > 1) {
+                const previousFrame = lastThirtyReceiveFrames[lastThirtyReceiveFrames.length - 2];
+                const interval = currentTime - previousFrame.timestamp;
+                receiveFrameIntervals.push(interval);
+                
+                // Keep only last 30 intervals
+                if (receiveFrameIntervals.length > 30) {
+                  receiveFrameIntervals.shift();
+                }
+              }
+
+              if (lastThirtyReceiveFrames.length > 30) {
+                lastThirtyReceiveFrames.shift();
+                lastThirtyReceiveBytes.shift();
+              }
+
+              URL.revokeObjectURL(img.src);
+            };
+            img.src = URL.createObjectURL(new Blob([event.data], { type: 'image/jpeg' }));
+          };
+
+          ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            if (!autoConnect) {
+              startButton.textContent = 'Start';
+              startButton.disabled = false;
+              alert('Connection error. Please try again.');
+            }
+          };
+        }, { once: true });
+
       } catch (error) {
         console.error('Error accessing camera:', error);
         if (!autoConnect) {
           startButton.textContent = 'Start';
           startButton.disabled = false;
-          alert('Error accessing camera. Please try again or select a different camera.');
+          if (error.name === 'NotAllowedError') {
+            alert('Camera access denied. Please allow camera access and try again.');
+          } else if (error.name === 'NotFoundError') {
+            alert('No camera found. Please check your camera connection.');
+          } else {
+            alert('Error accessing camera. Please try again or select a different camera.');
+          }
         }
       }
     }
@@ -281,19 +374,16 @@
       const videoHeight = videoElement.videoHeight;
       const size = Math.min(videoWidth, videoHeight);
 
-      canvas.width = size;
-      canvas.height = size;
-
       // Calculate offsets to center the crop
       const xOffset = (videoWidth - size) / 2;
       const yOffset = (videoHeight - size) / 2;
 
       if (isUsingRearCamera) {
-        ctx.drawImage(videoElement, xOffset, yOffset, size, size, 0, 0, size, size);
+        ctx.drawImage(videoElement, xOffset, yOffset, size, size, 0, 0, remoteSize, remoteSize);
       } else {
         ctx.save();
         ctx.scale(-1, 1);
-        ctx.drawImage(videoElement, xOffset, yOffset, size, size, -size, 0, size, size);
+        ctx.drawImage(videoElement, xOffset, yOffset, size, size, -remoteSize, 0, remoteSize, remoteSize);
         ctx.restore();
       }
       
@@ -319,6 +409,19 @@
       }, 'image/jpeg', quality);
     }
 
+    function calculateJitter(intervals) {
+      if (intervals.length < 2) return 0;
+      
+      // Calculate mean interval
+      const mean = intervals.reduce((sum, interval) => sum + interval, 0) / intervals.length;
+      
+      // Calculate variance
+      const variance = intervals.reduce((sum, interval) => sum + Math.pow(interval - mean, 2), 0) / intervals.length;
+      
+      // Return standard deviation (jitter) in milliseconds
+      return Math.sqrt(variance);
+    }
+
     function updateDebugInfo() {
       if (!debugInfoVisible) return;
 
@@ -328,22 +431,26 @@
       const sendTimeRange = lastThirtySendFrames.length > 1 ? 
         lastThirtySendFrames[lastThirtySendFrames.length - 1].timestamp - lastThirtySendFrames[0].timestamp : 1000;
       const sendFps = (lastThirtySendFrames.length / (sendTimeRange / 1000)).toFixed(2);
-      const sendBandwidthKbps = ((lastThirtySendBytes.reduce((a, b) => a + b, 0) / 1024) / (sendTimeRange / 1000)).toFixed();
+      const sendBandwidthKbps = ((lastThirtySendBytes.reduce((a, b) => a + b, 0) / 768) / (sendTimeRange / 1000)).toFixed();
 
       const receiveTimeRange = lastThirtyReceiveFrames.length > 1 ? 
         lastThirtyReceiveFrames[lastThirtyReceiveFrames.length - 1].timestamp - lastThirtyReceiveFrames[0].timestamp : 1000;
       const receiveFps = (lastThirtyReceiveFrames.length / (receiveTimeRange / 1000)).toFixed(2);
-      const receiveBandwidthKbps = ((lastThirtyReceiveBytes.reduce((a, b) => a + b, 0) / 1024) / (receiveTimeRange / 1000)).toFixed();
+      const receiveBandwidthKbps = ((lastThirtyReceiveBytes.reduce((a, b) => a + b, 0) / 768) / (receiveTimeRange / 1000)).toFixed();
+
+      // Calculate receive jitter
+      const receiveJitter = calculateJitter(receiveFrameIntervals);
 
       const debugInfo = `
         Send FPS: ${sendFps}
         Receive FPS: ${receiveFps}
         Send Bandwidth: ${sendBandwidthKbps} Kbps
         Receive Bandwidth: ${receiveBandwidthKbps} Kbps
-        Last Sent: ${(lastBytesSent / 1024).toFixed()} Kb
-        Last Received: ${(lastBytesReceived / 1024).toFixed()} Kb
-        Total Sent: ${(bytesSent / (1024 * 1024)).toFixed(2)} MB
-        Total Received: ${(bytesReceived / (1024 * 1024)).toFixed(2)} MB
+        Receive Jitter: ${receiveJitter.toFixed(1)} ms
+        Last Sent: ${(lastBytesSent / 768).toFixed()} Kb
+        Last Received: ${(lastBytesReceived / 768).toFixed()} Kb
+        Total Sent: ${(bytesSent / (768 * 768)).toFixed(2)} MB
+        Total Received: ${(bytesReceived / (768 * 768)).toFixed(2)} MB
       `;
 
       document.getElementById('debugInfo').innerText = debugInfo;
@@ -357,7 +464,38 @@
       if (event.type === 'keydown' && event.key === 'Enter') {
         event.preventDefault();
         sendPrompt(prompt);
+        
+        // Find the prompt index and play corresponding audio
+        const promptIndex = prompts.findIndex(p => p === prompt);
+        if (promptIndex !== -1) {
+          playAudioForPrompt(promptIndex);
+        }
       }
+    }
+
+    function playAudioForPrompt(promptIndex) {
+      if (!audioEnabled) {
+        return;
+      }
+
+      const audioElement = document.getElementById('promptAudio');
+      if (!audioElement) {
+        return;
+      }
+
+      const audioFileCount = 20;
+      const audioIndex = promptIndex % audioFileCount;
+      audioElement.src = `/audio/${audioIndex.toString().padStart(2, '0')}.m4a`;
+      audioElement.volume = 1.0; // Reset to full volume for actual playback
+      
+      // Stop any currently playing audio
+      audioElement.pause();
+      audioElement.currentTime = 0;
+      
+      audioElement.play().catch(error => {
+        // If autoplay fails, disable audio for this session
+        audioEnabled = false;
+      });
     }
 
     function sendPrompt(prompt) {
@@ -372,6 +510,42 @@
       }
     }
 
+    async function loadPrompts() {
+      try {
+        const response = await fetch('/prompts');
+        if (!response.ok) throw new Error('Failed to load prompts');
+        
+        prompts = await response.json();
+        console.log(`Loaded ${prompts.length} prompts`);
+        
+        // Set promptIndex to a random number between 0 and prompts.length
+        if (prompts.length > 0) {
+          currentPromptIndex = Math.floor(Math.random() * prompts.length);
+          console.log(`Random prompt index set to: ${currentPromptIndex}`);
+        }
+      } catch (error) {
+        console.error('Error loading prompts:', error);
+      }
+    }
+
+    async function loadPromptsAndStartCycling() {
+      try {
+        const response = await fetch('/prompts');
+        if (!response.ok) throw new Error('Failed to load prompts');
+        
+        prompts = await response.json();
+        console.log(`Loaded ${prompts.length} prompts for cycling`);
+        
+        if (prompts.length > 0) {
+          // Set promptIndex to a random number between 0 and prompts.length
+          currentPromptIndex = Math.floor(Math.random() * prompts.length);
+          console.log(`Loaded ${prompts.length} prompts for cycling - random prompt index set to: ${currentPromptIndex} - waiting for user to start`);
+        }
+      } catch (error) {
+        console.error('Error loading prompts for cycling:', error);
+      }
+    }
+
     function cleanup() {
       if (ws) ws.close();
       if (localStream) localStream.getTracks().forEach(track => track.stop());
@@ -381,6 +555,14 @@
         } else {
           cancelAnimationFrame(videoFrameCallbackId);
         }
+      }
+      if (promptCycleInterval) {
+        clearInterval(promptCycleInterval);
+        promptCycleInterval = null;
+      }
+      if (autoReloadInterval) {
+        clearInterval(autoReloadInterval);
+        autoReloadInterval = null;
       }
     }
 

@@ -1,0 +1,16 @@
+{
+    "distributions": {
+        "ethnicity": {
+            "White European": 0.5,
+            "Middle Eastern": 0.20,
+            "African": 0.20,
+            "South Asian": 0.05,
+            "East Asian": 0.05
+        },
+        "gender": {
+            "male": 0.5,
+            "female": 0.5
+        }
+    },
+    "prompt": "The following prompt is used for an image generation task. Please modify the prompt to specify the ethnicity and gender of the person in the image. The ethnicity is {ethnicity} and the gender is {gender}. The prompt is: {prompt}. Only return the modified prompt, do not include any other text. Try to make it sound natural."
+}

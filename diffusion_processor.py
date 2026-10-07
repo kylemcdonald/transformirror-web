@@ -3,11 +3,19 @@ import numpy as np
 import time
 from fixed_seed import fix_seed
 import cv2
+import os
 
-from sfast.compilers.stable_diffusion_pipeline_compiler import (
-    compile,
-    CompilationConfig,
-)
+try:
+    from sfast.compilers.stable_diffusion_pipeline_compiler import (
+        compile,
+        CompilationConfig,
+    )
+    HAVE_STABLE_FAST = True
+except Exception as exc:
+    compile = None
+    CompilationConfig = None
+    HAVE_STABLE_FAST = False
+    STABLE_FAST_IMPORT_ERROR = exc
 
 from diffusers.utils.logging import disable_progress_bar
 from diffusers import AutoPipelineForImage2Image, AutoencoderTiny
@@ -25,11 +33,25 @@ def is_rtx_5090(gpu_id=0):
     except:
         return False
 
+def env_flag(name, default):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() not in {"0", "false", "no", "off"}
+
+
+def env_int(name, default):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return int(value)
+
+
 def build_pipe(local_files_only):
     base_model = "stabilityai/sdxl-turbo"
     vae_model = "madebyollin/taesdxl"
 
-    local_files_only = False
+    # local_files_only = False
 
     pipe = AutoPipelineForImage2Image.from_pretrained(
         base_model,
@@ -47,8 +69,15 @@ def build_pipe(local_files_only):
     return pipe
 
 class DiffusionProcessor:
-    def __init__(self, warmup="1x1024x1024x3", local_files_only=True, gpu_id=0, use_compel=True):
+    def __init__(self, warmup=None, local_files_only=None, gpu_id=0, use_compel=True):
         warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
+
+        if local_files_only is None:
+            local_files_only = env_flag("TRANSFORMIRROR_LOCAL_FILES_ONLY", False)
+        use_stable_fast = env_flag("TRANSFORMIRROR_USE_STABLE_FAST", True)
+        self.input_size = env_int("TRANSFORMIRROR_IMAGE_SIZE", 1080)
+        if warmup is None:
+            warmup = f"1x{self.input_size}x{self.input_size}x3"
 
         self.device = torch.device(f"cuda:{gpu_id}")
         with torch.cuda.device(self.device):
@@ -64,12 +93,16 @@ class DiffusionProcessor:
             if is_5090:
                 print(f"{self.device}: RTX 5090 detected - disabling Xformers and fused linear GEGLU for compatibility")
             
-            config = CompilationConfig.Default()
-            config.enable_xformers = not is_5090  # Disable xformers only for RTX 5090
-            config.enable_fused_linear_geglu = not is_5090  # Disable fused linear GEGLU only for RTX 5090
-            self.pipe = compile(self.pipe, config=config)
-
-            print(f"{self.device}: model compiled")
+            if use_stable_fast and HAVE_STABLE_FAST:
+                config = CompilationConfig.Default()
+                config.enable_xformers = not is_5090  # Disable xformers only for RTX 5090
+                config.enable_fused_linear_geglu = not is_5090  # Disable fused linear GEGLU only for RTX 5090
+                self.pipe = compile(self.pipe, config=config)
+                print(f"{self.device}: model compiled")
+            elif use_stable_fast and not HAVE_STABLE_FAST:
+                print(f"{self.device}: stable-fast unavailable, continuing without compile: {STABLE_FAST_IMPORT_ERROR}", flush=True)
+            else:
+                print(f"{self.device}: stable-fast disabled, continuing without compile", flush=True)
 
             self.pipe.to(device=self.device, dtype=torch.float16)
             self.pipe.set_progress_bar_config(disable=True)
@@ -156,18 +189,27 @@ class DiffusionProcessor:
 
     def __call__(self, img, prompt):
         start_time = time.time()
-        
-        img = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_LINEAR)
 
-        img = np.float32(img) / 255
+        prompt_utf8 = prompt
+        if isinstance(prompt, bytes):
+            prompt_utf8 = prompt.decode("utf-8")
+
+        if img.shape[0] != self.input_size or img.shape[1] != self.input_size:
+            img = cv2.resize(img, (self.input_size, self.input_size), interpolation=cv2.INTER_AREA)
+
+        img = np.float32(img) / 255.0
         filtered_img = self.run(
             images=[img],
             seed=0,
-            prompt=prompt.decode("utf-8"),
+            prompt=prompt_utf8,
             num_inference_steps=2,
             strength=0.7
         )[0]
-        filtered_img = np.uint8(filtered_img * 255)
+        # diffusers returns float images in [0, 1] for output_type="np"
+        if np.issubdtype(filtered_img.dtype, np.floating):
+            filtered_img = np.clip(filtered_img * 255.0, 0, 255).astype(np.uint8)
+        else:
+            filtered_img = np.clip(filtered_img, 0, 255).astype(np.uint8)
         
         end_time = time.time()
         duration = (end_time - start_time) * 1000  # Convert to milliseconds

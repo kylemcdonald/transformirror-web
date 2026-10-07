@@ -1,4 +1,9 @@
 #!/bin/bash
+set -euo pipefail
 
-source venv/bin/activate
-python3 server.py
+cd "$(dirname "$0")"
+
+export HF_HOME="${HF_HOME:-/workspace/.cache}"
+export PYTHONUNBUFFERED=1
+source .venv/bin/activate
+exec python3 server.py
