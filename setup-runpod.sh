@@ -35,7 +35,8 @@ fail() {
 trap 'fail "setup-runpod.sh failed at line $LINENO"' ERR
 
 GPU_COUNT=$(nvidia-smi -L | wc -l)
-GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1)
+# -i 0 rather than `| head -n 1`: some drivers get SIGPIPE when head exits, which fails under pipefail.
+GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0)
 
 report system "Installing system packages"
 apt-get update -qq
