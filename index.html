@@ -262,10 +262,7 @@
         localVideoElement.style.transform = isUsingRearCamera ? 'none' : 'scaleX(-1)';
 
         // Create the video element for frame processing
-        videoElement = document.createElement('video');
-        videoElement.srcObject = localStream;
-        videoElement.autoplay = true;
-        videoElement.playsInline = true;
+        videoElement = createCaptureVideo(localStream);
 
         const remoteCanvas = document.getElementById('remoteVideo');
         remoteCanvas.width = remoteSize;
@@ -358,6 +355,32 @@
           }
         }
       }
+    }
+
+    // Mobile browsers (iOS Safari especially) pause a muted video that isn't in
+    // the page or isn't visible, which froze capture after the first frame.
+    // Keep the capture video in the page, tiny and nearly transparent, and play it explicitly.
+    function createCaptureVideo(stream) {
+      const video = document.createElement('video');
+      video.muted = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      video.setAttribute('muted', '');
+      video.setAttribute('playsinline', '');
+      Object.assign(video.style, {
+        position: 'fixed',
+        left: '0',
+        bottom: '0',
+        width: '2px',
+        height: '2px',
+        opacity: '0.01',
+        pointerEvents: 'none',
+        zIndex: '-1'
+      });
+      video.srcObject = stream;
+      document.body.appendChild(video);
+      video.play().catch((error) => console.warn('Capture video did not start playing:', error));
+      return video;
     }
 
     function requestVideoFrame() {
