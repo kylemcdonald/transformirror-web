@@ -24,6 +24,7 @@ import warnings
 
 from compel import Compel, ReturnedEmbeddingsType
 from fixed_size_dict import FixedSizeDict
+from image_size import image_size
 
 def is_rtx_5090(gpu_id=0):
     """Check if the current GPU is an RTX 5090"""
@@ -38,13 +39,6 @@ def env_flag(name, default):
     if value is None:
         return default
     return value.lower() not in {"0", "false", "no", "off"}
-
-
-def env_int(name, default):
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return int(value)
 
 
 def build_pipe(local_files_only):
@@ -75,9 +69,9 @@ class DiffusionProcessor:
         if local_files_only is None:
             local_files_only = env_flag("TRANSFORMIRROR_LOCAL_FILES_ONLY", False)
         use_stable_fast = env_flag("TRANSFORMIRROR_USE_STABLE_FAST", True)
-        self.input_size = env_int("TRANSFORMIRROR_IMAGE_SIZE", 1080)
+        self.width, self.height = image_size()
         if warmup is None:
-            warmup = f"1x{self.input_size}x{self.input_size}x3"
+            warmup = f"1x{self.height}x{self.width}x3"
 
         self.device = torch.device(f"cuda:{gpu_id}")
         with torch.cuda.device(self.device):
@@ -194,8 +188,8 @@ class DiffusionProcessor:
         if isinstance(prompt, bytes):
             prompt_utf8 = prompt.decode("utf-8")
 
-        if img.shape[0] != self.input_size or img.shape[1] != self.input_size:
-            img = cv2.resize(img, (self.input_size, self.input_size), interpolation=cv2.INTER_AREA)
+        if img.shape[0] != self.height or img.shape[1] != self.width:
+            img = cv2.resize(img, (self.width, self.height), interpolation=cv2.INTER_AREA)
 
         img = np.float32(img) / 255.0
         filtered_img = self.run(

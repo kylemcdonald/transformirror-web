@@ -12,6 +12,7 @@ import os
 import ssl
 import heapq
 import json
+from image_size import image_size
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
@@ -117,6 +118,11 @@ async def health(request):
     })
 
 
+async def config(request):
+    width, height = image_size()
+    return web.json_response({"width": width, "height": height})
+
+
 def distribute_loop(app):
     incoming_client_frames = app['incoming_client_frames']
     
@@ -209,6 +215,7 @@ if __name__ == '__main__':
     app.router.add_get('/set', set_parameters)
     app.router.add_get('/prompts', get_prompts)
     app.router.add_get('/health', health)
+    app.router.add_get('/config', config)
     app.router.add_static('/audio', path='data/audio', name='audio')
     app.on_shutdown.append(on_shutdown)
     app.on_startup.append(on_startup)

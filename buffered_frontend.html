@@ -25,8 +25,9 @@
       position: fixed;
       top: 0;
       left: 50%;
-      width: 100vh;
       height: 100vh;
+      width: auto;
+      aspect-ratio: 1 / 1;
       transform: translateX(-50%);
       transition: transform 0.3s ease;
     }
@@ -131,7 +132,8 @@
 
   <script>
     const quality = 0.5;
-    const remoteSize = 1080;
+    let remoteWidth = 1080;
+    let remoteHeight = 1080;
     const TARGET_RENDER_INTERVAL_MS = 1000 / 30;
     const MIN_BUFFER_MS = 75;
     const MAX_BUFFER_MS = 150;
@@ -158,8 +160,8 @@
     let receiveFrameQueue = [];
     let renderLoopHandle = null;
     let lastPresentedBitmap = null;
-    let lastPresentedBitmapWidth = remoteSize;
-    let lastPresentedBitmapHeight = remoteSize;
+    let lastPresentedBitmapWidth = remoteWidth;
+    let lastPresentedBitmapHeight = remoteHeight;
     let nextPresentationTime = 0;
     let activeBufferDelayMs = DEFAULT_BUFFER_MS;
     let fixedBufferDelayMs = DEFAULT_BUFFER_MS;
@@ -270,24 +272,26 @@
           ? { facingMode: { exact: selectedDirection } }
           : {
               deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
-              width: 1080,
-              height: 1080,
+              // Large enough to crop any of the sizes from.
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
               frameRate: 30
             },
         audio: false
       };
 
       audioEnabled = true;
+      await loadImageSize();
 
       try {
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
         isUsingRearCamera = isMobile && selectedDirection === 'environment';
 
         canvas = document.createElement('canvas');
-        canvas.width = remoteSize;
-        canvas.height = remoteSize;
+        canvas.width = remoteWidth;
+        canvas.height = remoteHeight;
         ctx = canvas.getContext('2d', { willReadFrequently: true });
-        snapshotCanvasPool = createSnapshotCanvasPool(3, remoteSize);
+        snapshotCanvasPool = createSnapshotCanvasPool(3, remoteWidth, remoteHeight);
 
         const localVideoElement = document.getElementById('localVideo');
         localVideoElement.srcObject = localStream;
@@ -296,8 +300,8 @@
         videoElement = createCaptureVideo(localStream);
 
         const remoteCanvas = document.getElementById('remoteVideo');
-        remoteCanvas.width = remoteSize;
-        remoteCanvas.height = remoteSize;
+        remoteCanvas.width = remoteWidth;
+        remoteCanvas.height = remoteHeight;
         const remoteCtx = remoteCanvas.getContext('2d');
         remoteCtx.imageSmoothingEnabled = true;
         remoteCtx.imageSmoothingQuality = 'high';
@@ -400,6 +404,21 @@
       return video;
     }
 
+    // The GPU workers run at one size (1080x1080, 1280x720 or 720x1280), which the server reports.
+    async function loadImageSize() {
+      try {
+        const response = await fetch('/config', { cache: 'no-store' });
+        const config = await response.json();
+        if (config.width > 0 && config.height > 0) {
+          remoteWidth = config.width;
+          remoteHeight = config.height;
+        }
+      } catch (error) {
+        console.warn('Could not load /config, assuming 1080x1080:', error);
+      }
+      document.getElementById('remoteVideo').style.aspectRatio = `${remoteWidth} / ${remoteHeight}`;
+    }
+
     function requestVideoFrame() {
       videoFrameCallbackId = videoElement.requestVideoFrameCallback(processVideoFrame);
     }
@@ -420,16 +439,19 @@
 
       const videoWidth = videoElement.videoWidth;
       const videoHeight = videoElement.videoHeight;
-      const size = Math.min(videoWidth, videoHeight);
-      const xOffset = (videoWidth - size) / 2;
-      const yOffset = (videoHeight - size) / 2;
+      // Crop the center of the camera image to the workers' aspect ratio.
+      const scale = Math.min(videoWidth / remoteWidth, videoHeight / remoteHeight);
+      const cropWidth = remoteWidth * scale;
+      const cropHeight = remoteHeight * scale;
+      const xOffset = (videoWidth - cropWidth) / 2;
+      const yOffset = (videoHeight - cropHeight) / 2;
 
       if (isUsingRearCamera) {
-        ctx.drawImage(videoElement, xOffset, yOffset, size, size, 0, 0, remoteSize, remoteSize);
+        ctx.drawImage(videoElement, xOffset, yOffset, cropWidth, cropHeight, 0, 0, remoteWidth, remoteHeight);
       } else {
         ctx.save();
         ctx.scale(-1, 1);
-        ctx.drawImage(videoElement, xOffset, yOffset, size, size, -remoteSize, 0, remoteSize, remoteSize);
+        ctx.drawImage(videoElement, xOffset, yOffset, cropWidth, cropHeight, -remoteWidth, 0, remoteWidth, remoteHeight);
         ctx.restore();
       }
 
@@ -456,11 +478,11 @@
       flushSendQueue(now);
     }
 
-    function createSnapshotCanvasPool(size, dimension) {
+    function createSnapshotCanvasPool(size, width, height) {
       return Array.from({ length: size }, () => {
         const snapshot = document.createElement('canvas');
-        snapshot.width = dimension;
-        snapshot.height = dimension;
+        snapshot.width = width;
+        snapshot.height = height;
         return snapshot;
       });
     }

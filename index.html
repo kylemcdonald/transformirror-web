@@ -29,7 +29,8 @@
       top: 0;
       left: 50%;
       height: 100vh;
-      width: 100vh;
+      width: auto;
+      aspect-ratio: 1 / 1;
       max-width: none;
       object-fit: contain;
       transform: translateX(-50%);
@@ -138,7 +139,8 @@
 
   <script>
     const quality = 0.5;
-    const remoteSize = 1080;
+    let remoteWidth = 1080;
+    let remoteHeight = 1080;
     let ws, localStream, canvas, ctx, startTime, sendFrameCount = 0, receiveFrameCount = 0,
         bytesSent = 0, bytesReceived = 0, lastUpdateTime, lastBytesSent = 0, lastBytesReceived = 0,
         videoFrameCallbackId, debugInfoVisible = false, isMobile = false, isUsingRearCamera = false;
@@ -234,8 +236,9 @@
           ? { facingMode: { exact: selectedDirection } }
           : { 
               deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
-              width: 1080, 
-              height: 1080, 
+              // Large enough to crop any of the sizes from.
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
               frameRate: 30
             },
         audio: false
@@ -243,6 +246,7 @@
 
       // Audio will be enabled when we first try to play it
       audioEnabled = true;
+      await loadImageSize();
 
       try {
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -252,8 +256,8 @@
         const settings = track.getSettings();
 
         canvas = document.createElement('canvas');
-        canvas.width = remoteSize;
-        canvas.height = remoteSize;
+        canvas.width = remoteWidth;
+        canvas.height = remoteHeight;
         ctx = canvas.getContext('2d', { willReadFrequently: true });
 
         // Set up the local video display
@@ -265,8 +269,8 @@
         videoElement = createCaptureVideo(localStream);
 
         const remoteCanvas = document.getElementById('remoteVideo');
-        remoteCanvas.width = remoteSize;
-        remoteCanvas.height = remoteSize;
+        remoteCanvas.width = remoteWidth;
+        remoteCanvas.height = remoteHeight;
         const remoteCtx = remoteCanvas.getContext('2d');
 
         // Wait for the video element to be ready before establishing WebSocket connection
@@ -383,6 +387,21 @@
       return video;
     }
 
+    // The GPU workers run at one size (1080x1080, 1280x720 or 720x1280), which the server reports.
+    async function loadImageSize() {
+      try {
+        const response = await fetch('/config', { cache: 'no-store' });
+        const config = await response.json();
+        if (config.width > 0 && config.height > 0) {
+          remoteWidth = config.width;
+          remoteHeight = config.height;
+        }
+      } catch (error) {
+        console.warn('Could not load /config, assuming 1080x1080:', error);
+      }
+      document.getElementById('remoteVideo').style.aspectRatio = `${remoteWidth} / ${remoteHeight}`;
+    }
+
     function requestVideoFrame() {
         videoFrameCallbackId = videoElement.requestVideoFrameCallback(processVideoFrame);
     }
@@ -395,18 +414,19 @@
 
       const videoWidth = videoElement.videoWidth;
       const videoHeight = videoElement.videoHeight;
-      const size = Math.min(videoWidth, videoHeight);
-
-      // Calculate offsets to center the crop
-      const xOffset = (videoWidth - size) / 2;
-      const yOffset = (videoHeight - size) / 2;
+      // Crop the center of the camera image to the workers' aspect ratio.
+      const scale = Math.min(videoWidth / remoteWidth, videoHeight / remoteHeight);
+      const cropWidth = remoteWidth * scale;
+      const cropHeight = remoteHeight * scale;
+      const xOffset = (videoWidth - cropWidth) / 2;
+      const yOffset = (videoHeight - cropHeight) / 2;
 
       if (isUsingRearCamera) {
-        ctx.drawImage(videoElement, xOffset, yOffset, size, size, 0, 0, remoteSize, remoteSize);
+        ctx.drawImage(videoElement, xOffset, yOffset, cropWidth, cropHeight, 0, 0, remoteWidth, remoteHeight);
       } else {
         ctx.save();
         ctx.scale(-1, 1);
-        ctx.drawImage(videoElement, xOffset, yOffset, size, size, -remoteSize, 0, remoteSize, remoteSize);
+        ctx.drawImage(videoElement, xOffset, yOffset, cropWidth, cropHeight, -remoteWidth, 0, remoteWidth, remoteHeight);
         ctx.restore();
       }
       
