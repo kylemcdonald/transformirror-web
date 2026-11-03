@@ -59,6 +59,9 @@ Edit `live_config.json` if needed. Important defaults:
   "camera_backend": "ffmpeg",
   "camera_fps": 30,
   "display_index": 0,
+  "display_offset_x": 0,
+  "display_offset_y": 0,
+  "display_mode": "fit",
   "fullscreen": true,
   "osc_port": 9000,
   "http_port": 8080
@@ -74,6 +77,8 @@ Start the app:
 The first launch downloads `stabilityai/sdxl-turbo` and `madebyollin/taesdxl`. After warmup, a 4090 should process `1280x704` frames in roughly 65-70 ms with the default two-step SDXL Turbo settings.
 
 Diffusion resolution can be changed live. Incoming width and height values are clamped down to multiples of 32 and to a maximum of `1280`. The selected resolution is persisted to `live_config.json` and reused on the next startup. The camera runs at the smallest configured capture mode that can provide a centered crop at least as large as the diffusion resolution; for example, `1280x640` uses a `1280x720` camera mode with a centered `1280x640` crop, and `1024x512` uses a centered `1280x640` crop resized to `1024x512`.
+
+Display offset and display mode can be changed live and are persisted to `live_config.json`. `display_mode` can be `fit` to show the whole image or `fill` to preserve aspect ratio while cropping enough to fill the screen. Positive `display_offset_x` moves the fitted image right; positive `display_offset_y` moves it down. Fullscreen mode can be toggled from the web UI for the current run, but startup is always fullscreen and the runtime toggle is not persisted.
 
 ### Systemd service
 
@@ -113,7 +118,7 @@ Update controls:
 ```
 curl -X POST http://localhost:8080/api/state \
   -H 'Content-Type: application/json' \
-  -d '{"prompt":"a neon mirror portrait","seed":42,"strength":0.7,"blend":0.5}'
+  -d '{"prompt":"a neon mirror portrait","seed":42,"strength":0.7,"blend":0.5,"display_offset_x":40,"display_offset_y":-20,"display_mode":"fill"}'
 ```
 
 Change resolution:
@@ -148,6 +153,11 @@ Supported addresses:
 /resolution    string        # e.g. "1024x512"
 /width         int           # updates width, keeping current height
 /height        int           # updates height, keeping current width
+/display_offset int int      # x y, positive x = right, positive y = down
+/offset_x      int           # display x offset in pixels
+/offset_y      int           # display y offset in pixels
+/display_mode  string        # fit or fill
+/aspect_fill   bool          # true = fill, false = fit
 /steps         int 2..8
 /screenshot    string path
 ```
@@ -163,6 +173,11 @@ Namespaced versions also work:
 /transformirror/resolution
 /transformirror/width
 /transformirror/height
+/transformirror/display_offset
+/transformirror/offset_x
+/transformirror/offset_y
+/transformirror/display_mode
+/transformirror/aspect_fill
 /transformirror/steps
 /transformirror/screenshot
 ```

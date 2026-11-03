@@ -26,6 +26,9 @@ DEFAULT_CONFIG = {
     "camera_backend": "ffmpeg",
     "camera_fps": 30,
     "display_index": 0,
+    "display_offset_x": 0,
+    "display_offset_y": 0,
+    "display_mode": "fit",
     "fullscreen": True,
     "mirror": True,
     "prompt": "a cinematic mirror portrait, luminous, detailed, surreal",
@@ -127,6 +130,47 @@ def parse_camera_device(value):
         return value
 
 
+def parse_display_offset(value):
+    return int(round(float(value)))
+
+
+def normalize_display_mode(value):
+    mode = str(value).strip().lower().replace("-", "_")
+    if mode in ("fill", "aspect_fill", "cover"):
+        return "fill"
+    if mode in ("fit", "aspect_fit", "contain"):
+        return "fit"
+    raise ValueError(f"unsupported display mode: {value}")
+
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).lower() in ("1", "true", "yes", "on")
+
+
+def blit_clipped(canvas, image, x, y):
+    canvas_h, canvas_w = canvas.shape[:2]
+    image_h, image_w = image.shape[:2]
+    x = int(round(x))
+    y = int(round(y))
+
+    dst_x1 = max(0, x)
+    dst_y1 = max(0, y)
+    dst_x2 = min(canvas_w, x + image_w)
+    dst_y2 = min(canvas_h, y + image_h)
+    if dst_x1 >= dst_x2 or dst_y1 >= dst_y2:
+        return
+
+    src_x1 = dst_x1 - x
+    src_y1 = dst_y1 - y
+    src_x2 = src_x1 + (dst_x2 - dst_x1)
+    src_y2 = src_y1 + (dst_y2 - dst_y1)
+    canvas[dst_y1:dst_y2, dst_x1:dst_x2] = image[src_y1:src_y2, src_x1:src_x2]
+
+
 class RuntimeState:
     def __init__(self, config, config_path):
         self.config = config
@@ -147,6 +191,14 @@ class RuntimeState:
         self.strength = float(config["strength"])
         self.blend = float(config["blend"])
         self.steps = int(clamp(int(config["steps"]), 2, 8))
+        self.display_offset_x = parse_display_offset(config["display_offset_x"])
+        self.display_offset_y = parse_display_offset(config["display_offset_y"])
+        self.display_mode = normalize_display_mode(config["display_mode"])
+        self.config["display_offset_x"] = self.display_offset_x
+        self.config["display_offset_y"] = self.display_offset_y
+        self.config["display_mode"] = self.display_mode
+        self.fullscreen = True
+        self.config["fullscreen"] = True
 
         self.raw_frame = None
         self.raw_frame_id = 0
@@ -179,6 +231,9 @@ class RuntimeState:
                 "strength": self.strength,
                 "blend": self.blend,
                 "steps": self.steps,
+                "display_offset_x": self.display_offset_x,
+                "display_offset_y": self.display_offset_y,
+                "display_mode": self.display_mode,
             }
 
     def resolution(self):
@@ -213,13 +268,16 @@ class RuntimeState:
             current_height if height is None else height,
         )
 
-    def persist_resolution(self):
+    def persist_config(self):
         data = dict(self.config)
-        data["width"] = self.width
-        data["height"] = self.height
         temp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
         temp_path.write_text(json.dumps(data, indent=2) + "\n")
         temp_path.replace(self.config_path)
+
+    def persist_resolution(self):
+        self.config["width"] = self.width
+        self.config["height"] = self.height
+        self.persist_config()
 
     def set_resolution(self, width, height):
         width, height = normalize_resolution(width, height)
@@ -275,6 +333,7 @@ class RuntimeState:
             changed.update(self.set_resolution(*resolution))
 
         with self.lock:
+            persist_display_config = False
             if "prompt" in updates and updates["prompt"] is not None:
                 self.prompt = str(updates["prompt"])
                 changed["prompt"] = self.prompt
@@ -290,6 +349,26 @@ class RuntimeState:
             if "steps" in updates and updates["steps"] is not None:
                 self.steps = int(clamp(int(updates["steps"]), 2, 8))
                 changed["steps"] = self.steps
+            if "display_offset_x" in updates and updates["display_offset_x"] is not None:
+                self.display_offset_x = parse_display_offset(updates["display_offset_x"])
+                self.config["display_offset_x"] = self.display_offset_x
+                changed["display_offset_x"] = self.display_offset_x
+                persist_display_config = True
+            if "display_offset_y" in updates and updates["display_offset_y"] is not None:
+                self.display_offset_y = parse_display_offset(updates["display_offset_y"])
+                self.config["display_offset_y"] = self.display_offset_y
+                changed["display_offset_y"] = self.display_offset_y
+                persist_display_config = True
+            if "display_mode" in updates and updates["display_mode"] is not None:
+                self.display_mode = normalize_display_mode(updates["display_mode"])
+                self.config["display_mode"] = self.display_mode
+                changed["display_mode"] = self.display_mode
+                persist_display_config = True
+            if "fullscreen" in updates and updates["fullscreen"] is not None:
+                self.fullscreen = parse_bool(updates["fullscreen"])
+                changed["fullscreen"] = self.fullscreen
+            if persist_display_config:
+                self.persist_config()
         if changed:
             print(f"controls updated: {changed}", flush=True)
         return changed
@@ -303,6 +382,9 @@ class RuntimeState:
                     "strength": self.strength,
                     "blend": self.blend,
                     "steps": self.steps,
+                    "display_offset_x": self.display_offset_x,
+                    "display_offset_y": self.display_offset_y,
+                    "display_mode": self.display_mode,
                 },
                 "config": {
                     "width": self.width,
@@ -311,6 +393,10 @@ class RuntimeState:
                     "camera_backend": self.config["camera_backend"],
                     "camera_fps": self.config["camera_fps"],
                     "display_index": self.config["display_index"],
+                    "display_offset_x": self.display_offset_x,
+                    "display_offset_y": self.display_offset_y,
+                    "display_mode": self.display_mode,
+                    "fullscreen": self.fullscreen,
                     "osc_port": self.config["osc_port"],
                     "http_port": self.config["http_port"],
                 },
@@ -350,11 +436,26 @@ class RuntimeState:
             self.display_width = int(width)
             self.display_height = int(height)
 
+    def display_offsets(self):
+        with self.lock:
+            return self.display_offset_x, self.display_offset_y
+
+    def display_fit_mode(self):
+        with self.lock:
+            return self.display_mode
+
+    def display_fullscreen(self):
+        with self.lock:
+            return self.fullscreen
+
     def current_display_frame(self):
         with self.lock:
             blend = self.blend
             display_width = self.display_width
             display_height = self.display_height
+            offset_x = self.display_offset_x
+            offset_y = self.display_offset_y
+            display_mode = self.display_mode
         with self.frame_lock:
             raw = None if self.raw_frame is None else self.raw_frame.copy()
             processed = None if self.processed_frame is None else self.processed_frame.copy()
@@ -369,14 +470,19 @@ class RuntimeState:
             frame = cv2.addWeighted(raw, 1.0 - blend, processed, blend, 0)
 
         src_h, src_w = frame.shape[:2]
-        scale = min(display_width / src_w, display_height / src_h)
-        draw_w = max(1, int(src_w * scale))
-        draw_h = max(1, int(src_h * scale))
+        scale_fn = max if display_mode == "fill" else min
+        scale = scale_fn(display_width / src_w, display_height / src_h)
+        if display_mode == "fill":
+            draw_w = max(1, int(np.ceil(src_w * scale)))
+            draw_h = max(1, int(np.ceil(src_h * scale)))
+        else:
+            draw_w = max(1, int(src_w * scale))
+            draw_h = max(1, int(src_h * scale))
         resized = cv2.resize(frame, (draw_w, draw_h), interpolation=cv2.INTER_LINEAR)
         canvas = np.zeros((display_height, display_width, 3), dtype=np.uint8)
-        x = (display_width - draw_w) // 2
-        y = (display_height - draw_h) // 2
-        canvas[y : y + draw_h, x : x + draw_w] = resized
+        x = (display_width - draw_w) // 2 + offset_x
+        y = (display_height - draw_h) // 2 + offset_y
+        blit_clipped(canvas, resized, x, y)
         return canvas
 
     def save_screenshot(self, path):
@@ -735,6 +841,14 @@ class OscThread(threading.Thread):
             "/steps",
             "/width",
             "/height",
+            "/display_offset",
+            "/display_offset_x",
+            "/display_offset_y",
+            "/display_mode",
+            "/aspect_fill",
+            "/offset",
+            "/offset_x",
+            "/offset_y",
             "/transformirror/prompt",
             "/transformirror/seed",
             "/transformirror/strength",
@@ -745,6 +859,14 @@ class OscThread(threading.Thread):
             "/transformirror/steps",
             "/transformirror/width",
             "/transformirror/height",
+            "/transformirror/display_offset",
+            "/transformirror/display_offset_x",
+            "/transformirror/display_offset_y",
+            "/transformirror/display_mode",
+            "/transformirror/aspect_fill",
+            "/transformirror/offset",
+            "/transformirror/offset_x",
+            "/transformirror/offset_y",
         ):
             dispatcher.map(address, self.handle)
 
@@ -784,6 +906,18 @@ class OscThread(threading.Thread):
                 self.state.update_controls(width=value)
             elif key == "height":
                 self.state.update_controls(height=value)
+            elif key in ("display_offset", "offset"):
+                if len(args) >= 2:
+                    self.state.update_controls(display_offset_x=args[0], display_offset_y=args[1])
+            elif key in ("display_offset_x", "offset_x"):
+                self.state.update_controls(display_offset_x=value)
+            elif key in ("display_offset_y", "offset_y"):
+                self.state.update_controls(display_offset_y=value)
+            elif key == "display_mode":
+                self.state.update_controls(display_mode=value)
+            elif key == "aspect_fill":
+                enabled = str(value).lower() in ("1", "true", "yes", "on")
+                self.state.update_controls(display_mode="fill" if enabled else "fit")
             elif key == "screenshot":
                 self.state.save_screenshot(str(value))
             elif key == "steps":
@@ -808,7 +942,20 @@ def create_http_app(state):
     def set_state(payload: dict = Body(...)):
         allowed = {
             k: payload[k]
-            for k in ("prompt", "seed", "strength", "blend", "steps", "width", "height", "resolution")
+            for k in (
+                "prompt",
+                "seed",
+                "strength",
+                "blend",
+                "steps",
+                "width",
+                "height",
+                "resolution",
+                "display_offset_x",
+                "display_offset_y",
+                "display_mode",
+                "fullscreen",
+            )
             if k in payload
         }
         state.update_controls(**allowed)
@@ -854,10 +1001,15 @@ class DisplayApp:
         self.last_generation = -1
         self.draw_count = 0
         self.last_draw_t = time.perf_counter()
+        self.screen = None
+        self.last_fullscreen = None
 
         self.window = self.create_window()
+        self.last_fullscreen = self.state.display_fullscreen()
+        self.state.set_display_size(self.window.width, self.window.height)
         self.window.event(self.on_draw)
         self.window.event(self.on_key_press)
+        self.window.event(self.on_resize)
 
     def create_window(self):
         display = pyglet.display.get_display()
@@ -866,24 +1018,41 @@ class DisplayApp:
         if screens:
             idx = int(clamp(int(self.config["display_index"]), 0, len(screens) - 1))
             screen = screens[idx]
+            self.screen = screen
             print(f"using display {idx}: {screen.width}x{screen.height}", flush=True)
-            self.state.set_display_size(screen.width, screen.height)
 
         try:
             return pyglet.window.Window(
-                fullscreen=bool(self.config["fullscreen"]),
+                fullscreen=self.state.display_fullscreen(),
                 screen=screen,
                 vsync=True,
                 caption="Transformirror",
             )
         except Exception as exc:
             print(f"fullscreen window failed, opening windowed: {exc}", flush=True)
+            self.state.update_controls(fullscreen=False)
             return pyglet.window.Window(
                 width=self.width,
                 height=self.height,
                 vsync=True,
                 caption="Transformirror",
             )
+
+    def apply_display_mode(self):
+        fullscreen = self.state.display_fullscreen()
+        if fullscreen == self.last_fullscreen:
+            return
+        try:
+            if fullscreen:
+                self.window.set_fullscreen(True, screen=self.screen)
+            else:
+                self.window.set_fullscreen(False)
+            self.last_fullscreen = fullscreen
+            self.state.set_display_size(self.window.width, self.window.height)
+            print(f"display fullscreen updated: {fullscreen}", flush=True)
+        except Exception as exc:
+            self.state.set_error(f"failed to update fullscreen: {exc}")
+            self.state.update_controls(fullscreen=self.last_fullscreen)
 
     def choose_frame(self):
         width, height, generation = self.state.resolution()
@@ -946,10 +1115,12 @@ class DisplayApp:
 
     def fitted_rect(self):
         ww, wh = self.window.width, self.window.height
-        scale = min(ww / self.width, wh / self.height)
+        scale_fn = max if self.state.display_fit_mode() == "fill" else min
+        scale = scale_fn(ww / self.width, wh / self.height)
         draw_w = self.width * scale
         draw_h = self.height * scale
-        return (ww - draw_w) / 2, (wh - draw_h) / 2, draw_w, draw_h
+        offset_x, offset_y = self.state.display_offsets()
+        return (ww - draw_w) / 2 + offset_x, (wh - draw_h) / 2 - offset_y, draw_w, draw_h
 
     def on_draw(self):
         self.window.clear()
@@ -973,12 +1144,16 @@ class DisplayApp:
         elif symbol == pyglet.window.key.P:
             self.state.update_controls(blend=1.0)
 
+    def on_resize(self, width, height):
+        self.state.set_display_size(width, height)
+
     def run(self):
         frame_interval = 1.0 / 60.0
         while not self.state.stop_event.is_set() and not self.window.has_exit:
             started = time.perf_counter()
             self.window.switch_to()
             self.window.dispatch_events()
+            self.apply_display_mode()
             self.update_texture(frame_interval)
             self.on_draw()
             self.window.flip()
@@ -991,12 +1166,23 @@ def load_config(path, args):
     config = dict(DEFAULT_CONFIG)
     if path.exists():
         config.update(json.loads(path.read_text()))
-    for key in ("width", "height", "camera_fps", "display_index", "osc_port", "http_port"):
+    for key in (
+        "width",
+        "height",
+        "camera_fps",
+        "display_index",
+        "display_offset_x",
+        "display_offset_y",
+        "display_mode",
+        "osc_port",
+        "http_port",
+    ):
         value = getattr(args, key, None)
         if value is not None:
             config[key] = value
     if args.camera_device is not None:
         config["camera_device"] = args.camera_device
+    config["fullscreen"] = True
     return config
 
 
@@ -1008,6 +1194,9 @@ def main():
     parser.add_argument("--camera-fps", type=int)
     parser.add_argument("--camera-device")
     parser.add_argument("--display-index", type=int)
+    parser.add_argument("--display-offset-x", type=int)
+    parser.add_argument("--display-offset-y", type=int)
+    parser.add_argument("--display-mode")
     parser.add_argument("--osc-port", type=int)
     parser.add_argument("--http-port", type=int)
     args = parser.parse_args()

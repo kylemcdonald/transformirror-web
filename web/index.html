@@ -118,6 +118,60 @@
       margin: 14px 0;
     }
 
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 14px 0;
+    }
+
+    .field-grid .field {
+      margin: 0;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0;
+      margin: 14px 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .segmented button {
+      border: 0;
+      border-radius: 0;
+      background: #101417;
+      color: var(--muted);
+      padding: 9px 10px;
+    }
+
+    .segmented button.active {
+      background: var(--accent);
+      color: #06201d;
+    }
+
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 14px 0;
+    }
+
+    .check-row input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+
+    .check-row label {
+      color: var(--text);
+      font-size: 14px;
+      margin: 0;
+      text-transform: none;
+    }
+
     input[type="range"] {
       width: 100%;
       accent-color: var(--accent);
@@ -202,6 +256,7 @@
       #status { white-space: normal; }
       .layout { grid-template-columns: 1fr; }
       .row { grid-template-columns: 1fr 74px; }
+      .field-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -242,6 +297,28 @@
         <div class="field">
           <label for="height" title="OSC: /height 512, or /resolution 1024 512">Height</label>
           <input id="height" type="number" min="32" max="1280" step="32" title="OSC: /height 512, or /resolution 1024 512">
+        </div>
+
+        <div class="field-grid">
+          <div class="field">
+            <label for="displayOffsetX" title="OSC: /offset_x 40, or /display_offset 40 -20">Offset X</label>
+            <input id="displayOffsetX" type="number" step="1" title="OSC: /offset_x 40, or /display_offset 40 -20">
+          </div>
+          <div class="field">
+            <label for="displayOffsetY" title="OSC: /offset_y -20, or /display_offset 40 -20">Offset Y</label>
+            <input id="displayOffsetY" type="number" step="1" title="OSC: /offset_y -20, or /display_offset 40 -20">
+          </div>
+        </div>
+
+        <label title="OSC: /display_mode fit, or /display_mode fill">Display Mode</label>
+        <div class="segmented" role="group" aria-label="Display mode">
+          <button id="displayModeFit" type="button" title="OSC: /display_mode fit">Fit</button>
+          <button id="displayModeFill" type="button" title="OSC: /display_mode fill">Fill</button>
+        </div>
+
+        <div class="check-row">
+          <input id="fullscreen" type="checkbox">
+          <label for="fullscreen">Fullscreen</label>
         </div>
 
         <div class="buttons">
@@ -295,6 +372,9 @@
 
           <div class="status-group">Display</div>
           <div class="status-label">Resolution</div><div class="status-value" id="displayResolution">-</div>
+          <div class="status-label">Mode</div><div class="status-value" id="displayMode">-</div>
+          <div class="status-label">Offset</div><div class="status-value" id="displayOffset">-</div>
+          <div class="status-label">Fullscreen</div><div class="status-value" id="displayFullscreen">-</div>
           <div class="status-label">FPS</div><div class="status-value" id="displayFps">-</div>
 
           <div class="status-group">Error</div>
@@ -308,6 +388,10 @@
     const $ = (id) => document.getElementById(id);
     let applyingRemote = false;
     let debounceTimer = null;
+    let promptDirty = false;
+    let promptComposing = false;
+    let promptServerValue = "";
+    let displayMode = "fit";
 
     function setStatus(text) {
       $("status").textContent = text;
@@ -335,6 +419,10 @@
         blend: Number($("blend").value),
         width: Number($("width").value),
         height: Number($("height").value),
+        display_offset_x: Number($("displayOffsetX").value),
+        display_offset_y: Number($("displayOffsetY").value),
+        display_mode: displayMode,
+        fullscreen: $("fullscreen").checked,
         seed: Number($("seed").value),
         steps: Number($("steps").value)
       };
@@ -342,7 +430,12 @@
 
     async function apply(update = collectState()) {
       try {
+        const sendsPrompt = Object.prototype.hasOwnProperty.call(update, "prompt");
         const state = await postState(update);
+        if (sendsPrompt) {
+          promptServerValue = state.controls.prompt;
+          promptDirty = $("prompt").value !== promptServerValue;
+        }
         render(state, true);
         setStatus("Updated");
       } catch (err) {
@@ -358,13 +451,23 @@
     function render(state, keepPromptFocus = false) {
       applyingRemote = true;
       const controls = state.controls;
-      if (!(keepPromptFocus && document.activeElement === $("prompt"))) {
-        $("prompt").value = controls.prompt;
+      promptServerValue = controls.prompt;
+      const promptFocused = document.activeElement === $("prompt");
+      const preservePrompt = promptDirty || promptComposing || promptFocused || (keepPromptFocus && promptFocused);
+      if (!preservePrompt) {
+        $("prompt").value = promptServerValue;
+        promptDirty = false;
       }
       setPair("strength", "strengthNumber", controls.strength);
       setPair("blend", "blendNumber", controls.blend);
       $("width").value = state.config.width;
       $("height").value = state.config.height;
+      $("displayOffsetX").value = controls.display_offset_x;
+      $("displayOffsetY").value = controls.display_offset_y;
+      displayMode = controls.display_mode || state.config.display_mode || "fit";
+      $("displayModeFit").classList.toggle("active", displayMode === "fit");
+      $("displayModeFill").classList.toggle("active", displayMode === "fill");
+      $("fullscreen").checked = Boolean(state.config.fullscreen);
       $("seed").value = controls.seed;
       setPair("steps", "stepsNumber", controls.steps);
 
@@ -374,6 +477,9 @@
       $("modelReady").textContent = changingSize ? "Changing size" : (state.status.model_ready ? "Ready" : "Loading");
       $("resolution").textContent = `${state.config.width} x ${state.config.height}`;
       $("displayResolution").textContent = `${state.stats.display_width} x ${state.stats.display_height}`;
+      $("displayMode").textContent = displayMode === "fill" ? "Fill" : "Fit";
+      $("displayOffset").textContent = `${controls.display_offset_x}, ${controls.display_offset_y}`;
+      $("displayFullscreen").textContent = state.config.fullscreen ? "On" : "Off";
       $("cameraMode").textContent = `${state.stats.camera_source_width} x ${state.stats.camera_source_height}`;
       $("cameraCrop").textContent = `${state.stats.camera_crop_width} x ${state.stats.camera_crop_height}`;
       $("cameraFps").textContent = state.stats.camera_fps.toFixed(2);
@@ -412,6 +518,18 @@
       apply({ seed });
     });
 
+    $("prompt").addEventListener("input", () => {
+      if (applyingRemote) return;
+      promptDirty = $("prompt").value !== promptServerValue;
+    });
+    $("prompt").addEventListener("compositionstart", () => {
+      promptComposing = true;
+    });
+    $("prompt").addEventListener("compositionend", () => {
+      promptComposing = false;
+      promptDirty = $("prompt").value !== promptServerValue;
+    });
+
     [["strength", "strengthNumber"], ["blend", "blendNumber"], ["steps", "stepsNumber"]].forEach(([rangeId, numberId]) => {
       $(rangeId).addEventListener("input", () => {
         if (applyingRemote) return;
@@ -433,6 +551,17 @@
     $("height").addEventListener("change", () => apply({
       width: Number($("width").value),
       height: Number($("height").value)
+    }));
+    $("displayOffsetX").addEventListener("change", () => apply({
+      display_offset_x: Number($("displayOffsetX").value)
+    }));
+    $("displayOffsetY").addEventListener("change", () => apply({
+      display_offset_y: Number($("displayOffsetY").value)
+    }));
+    $("displayModeFit").addEventListener("click", () => apply({ display_mode: "fit" }));
+    $("displayModeFill").addEventListener("click", () => apply({ display_mode: "fill" }));
+    $("fullscreen").addEventListener("change", () => apply({
+      fullscreen: $("fullscreen").checked
     }));
 
     poll();
