@@ -1,13 +1,17 @@
 {
-  "width": 1280,
-  "height": 704,
+  "width": 1024,
+  "height": 512,
   "camera_device": "/dev/video0",
+  "camera_devices": [
+    "/dev/video0",
+    "/dev/video2"
+  ],
   "camera_backend": "ffmpeg",
   "camera_fps": 30,
   "display_index": 0,
   "display_offset_x": 0,
-  "display_offset_y": -704,
-  "display_mode": "fill",
+  "display_offset_y": 0,
+  "display_mode": "fit",
   "fullscreen": true,
   "mirror": true,
   "prompt": "a cinematic mirror portrait, luminous, detailed, surreal",
@@ -17,6 +21,7 @@
   "steps": 2,
   "osc_host": "0.0.0.0",
   "osc_port": 9000,
+  "http_enabled": false,
   "http_host": "0.0.0.0",
   "http_port": 8080
 }

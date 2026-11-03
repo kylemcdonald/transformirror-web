@@ -47,6 +47,19 @@ python3 -m venv .venv
 
 If the prebuilt stable-fast wheel is not compatible with the local CUDA/PyTorch setup, build stable-fast from source and keep the same PyTorch version unless you are also updating the diffusion code.
 
+### Odaiba: two cameras, native only
+
+The `odaiba` branch combines two webcams into a single `1024x512` diffusion input: each camera is center-cropped to `512x512` and placed side by side, left to right in `camera_devices` order (each strip is mirrored when `mirror` is true). The result is shown fullscreen with Pyglet; the HTTP/web control server is off (`"http_enabled": false`), and OSC still works.
+
+```
+"width": 1024,
+"height": 512,
+"camera_devices": ["/dev/video0", "/dev/video2"],
+"http_enabled": false
+```
+
+Each USB webcam usually creates two `/dev/video*` nodes, so the second camera is often `/dev/video2`. Run `v4l2-ctl --list-devices` to check, and prefer the stable `/dev/v4l/by-id/...-video-index0` paths so the left/right order survives replugging. A missing or disconnected camera leaves its strip black and is retried every couple of seconds. For testing without hardware, use a synthetic source such as `"testsrc"` or `"testsrc:mandelbrot=size=1280x720:rate=30"`.
+
 ### Running manually
 
 Edit `live_config.json` if needed. Important defaults:

@@ -23,6 +23,10 @@ DEFAULT_CONFIG = {
     "width": 1280,
     "height": 704,
     "camera_device": "/dev/video0",
+    # Optional list of cameras. When set, each camera fills an equal-width
+    # vertical strip of the diffusion input, left to right in list order.
+    # Use "testsrc" (or "testsrc:<lavfi filter>") for a synthetic source.
+    "camera_devices": None,
     "camera_backend": "ffmpeg",
     "camera_fps": 30,
     "display_index": 0,
@@ -38,6 +42,7 @@ DEFAULT_CONFIG = {
     "steps": 2,
     "osc_host": "0.0.0.0",
     "osc_port": 9000,
+    "http_enabled": True,
     "http_host": "0.0.0.0",
     "http_port": 8080,
 }
@@ -117,6 +122,24 @@ def center_crop_and_resize(frame, target_width, target_height):
     interpolation = cv2.INTER_AREA if crop_width >= target_width and crop_height >= target_height else cv2.INTER_LINEAR
     resized = cv2.resize(cropped, (target_width, target_height), interpolation=interpolation)
     return resized, (crop_width, crop_height)
+
+
+def camera_device_list(config):
+    devices = config.get("camera_devices")
+    if not devices:
+        devices = [config["camera_device"]]
+    return [str(device) if not isinstance(device, int) else device for device in devices]
+
+
+def tile_widths(total_width, count):
+    base = total_width // count
+    widths = [base] * count
+    widths[-1] += total_width - base * count
+    return widths
+
+
+def is_test_source(device):
+    return isinstance(device, str) and device.split(":", 1)[0] == "testsrc"
 
 
 def parse_camera_device(value):
@@ -199,6 +222,11 @@ class RuntimeState:
         self.config["display_mode"] = self.display_mode
         self.fullscreen = True
         self.config["fullscreen"] = True
+
+        self.camera_devices = camera_device_list(config)
+        self.camera_tiles = [None] * len(self.camera_devices)
+        self.camera_tiles_generation = 0
+        self.camera_ready_flags = [False] * len(self.camera_devices)
 
         self.raw_frame = None
         self.raw_frame_id = 0
@@ -310,6 +338,43 @@ class RuntimeState:
         print(f"resolution updated: {width}x{height}", flush=True)
         return changed
 
+    def tile_size(self, index):
+        with self.lock:
+            widths = tile_widths(self.width, len(self.camera_devices))
+            return widths[index], self.height, self.resolution_generation
+
+    def set_camera_ready(self, index, ready):
+        with self.lock:
+            self.camera_ready_flags[index] = bool(ready)
+            self.camera_ready = any(self.camera_ready_flags)
+        if not ready:
+            self.publish_camera_tile(index, None, None)
+
+    def publish_camera_tile(self, index, tile, generation):
+        """Store one camera's strip and rebuild the combined input frame."""
+        with self.lock:
+            width, height, current_generation = self.width, self.height, self.resolution_generation
+        if generation is not None and generation != current_generation:
+            return
+        with self.frame_lock:
+            if self.camera_tiles_generation != current_generation:
+                self.camera_tiles = [None] * len(self.camera_devices)
+                self.camera_tiles_generation = current_generation
+            self.camera_tiles[index] = tile
+            if len(self.camera_tiles) == 1:
+                if tile is None:
+                    return
+                combined = tile
+            else:
+                combined = np.zeros((height, width, 3), dtype=np.uint8)
+                x = 0
+                for strip_width, strip in zip(tile_widths(width, len(self.camera_tiles)), self.camera_tiles):
+                    if strip is not None and strip.shape[:2] == (height, strip_width):
+                        combined[:, x : x + strip_width] = strip
+                    x += strip_width
+            self.raw_frame = combined
+            self.raw_frame_id += 1
+
     def set_camera_status(self, source_width, source_height, crop_width, crop_height):
         with self.lock:
             self.camera_source_width = int(source_width)
@@ -390,6 +455,7 @@ class RuntimeState:
                     "width": self.width,
                     "height": self.height,
                     "camera_device": self.config["camera_device"],
+                    "camera_devices": self.camera_devices,
                     "camera_backend": self.config["camera_backend"],
                     "camera_fps": self.config["camera_fps"],
                     "display_index": self.config["display_index"],
@@ -403,6 +469,7 @@ class RuntimeState:
                 "status": {
                     "model_ready": self.model_ready,
                     "camera_ready": self.camera_ready,
+                    "cameras_ready": list(self.camera_ready_flags),
                     "resolution_changing": self.resolution_changing,
                     "last_error": self.last_error,
                     "uptime_s": round(time.time() - self.started_at, 1),
@@ -503,13 +570,18 @@ class RuntimeState:
 
 
 class CameraThread(threading.Thread):
-    def __init__(self, state):
+    """Captures one device and publishes it as strip `index` of the combined input."""
+
+    def __init__(self, state, index=0):
         super().__init__(daemon=True)
         self.state = state
         self.config = state.config
+        self.index = index
+        self.device = state.camera_devices[index]
+        self.name_label = f"camera {index} ({self.device})"
 
     def open_camera(self, camera_width, camera_height):
-        device = parse_camera_device(self.config["camera_device"])
+        device = parse_camera_device(self.device)
         self.configure_v4l2(device)
         cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
@@ -520,7 +592,7 @@ class CameraThread(threading.Thread):
         return cap
 
     def configure_v4l2(self, device):
-        if not (isinstance(device, str) and device.startswith("/dev/video")):
+        if not (isinstance(device, str) and device.startswith("/dev/")):
             return
         subprocess.run(
             ["v4l2-ctl", "-d", device, "--set-ctrl=exposure_dynamic_framerate=0"],
@@ -530,9 +602,27 @@ class CameraThread(threading.Thread):
         )
 
     def open_ffmpeg(self, camera_width, camera_height):
-        device = str(self.config["camera_device"])
-        self.configure_v4l2(device)
+        device = str(self.device)
         fps = int(self.config["camera_fps"])
+        if is_test_source(device):
+            source = device.split(":", 1)[1] if ":" in device else f"testsrc2=size={camera_width}x{camera_height}:rate={fps}"
+            input_args = ["-re", "-f", "lavfi", "-i", source]
+        else:
+            if not os.path.exists(device):
+                raise FileNotFoundError(device)
+            self.configure_v4l2(device)
+            input_args = [
+                "-f",
+                "v4l2",
+                "-input_format",
+                "mjpeg",
+                "-framerate",
+                str(fps),
+                "-video_size",
+                f"{camera_width}x{camera_height}",
+                "-i",
+                device,
+            ]
         cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -542,18 +632,12 @@ class CameraThread(threading.Thread):
             "nobuffer",
             "-flags",
             "low_delay",
-            "-f",
-            "v4l2",
-            "-input_format",
-            "mjpeg",
-            "-framerate",
-            str(fps),
-            "-video_size",
-            f"{camera_width}x{camera_height}",
-            "-i",
-            device,
+            *input_args,
             "-an",
             "-sn",
+            # Force the expected size in case the device picked a different mode.
+            "-vf",
+            f"scale={camera_width}:{camera_height}",
             "-f",
             "rawvideo",
             "-pix_fmt",
@@ -562,18 +646,31 @@ class CameraThread(threading.Thread):
         ]
         return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
+    def publish(self, frame, camera_width, camera_height, target_width, target_height, generation):
+        frame, crop_size = center_crop_and_resize(frame, target_width, target_height)
+        self.state.set_camera_status(camera_width, camera_height, crop_size[0], crop_size[1])
+        self.state.publish_camera_tile(self.index, frame, generation)
+
+    def update_fps(self, counters):
+        counters["count"] += 1
+        now = time.perf_counter()
+        if now - counters["last_t"] >= 2.0:
+            fps = (counters["count"] - counters["last_count"]) / (now - counters["last_t"])
+            if self.index == 0:
+                self.state.camera_fps = fps
+            counters["last_count"] = counters["count"]
+            counters["last_t"] = now
+
     def run_ffmpeg(self):
         mirror = bool(self.config["mirror"])
-        target_width, target_height, generation = self.state.resolution()
+        target_width, target_height, generation = self.state.tile_size(self.index)
         camera_width, camera_height = choose_camera_mode(target_width, target_height)
         frame_bytes = camera_width * camera_height * 3
         proc = None
-        count = 0
-        last_count = 0
-        last_t = time.perf_counter()
+        counters = {"count": 0, "last_count": 0, "last_t": time.perf_counter()}
 
         while not self.state.stop_event.is_set():
-            current_width, current_height, current_generation = self.state.resolution()
+            current_width, current_height, current_generation = self.state.tile_size(self.index)
             current_camera_width, current_camera_height = choose_camera_mode(current_width, current_height)
             if current_generation != generation or (current_camera_width, current_camera_height) != (camera_width, camera_height):
                 generation = current_generation
@@ -595,45 +692,34 @@ class CameraThread(threading.Thread):
                     proc.kill()
                 try:
                     proc = self.open_ffmpeg(camera_width, camera_height)
-                    self.state.camera_ready = True
-                    self.state.clear_error()
                     print(
-                        f"ffmpeg camera opened {self.config['camera_device']} "
+                        f"ffmpeg {self.name_label} opened "
                         f"{camera_width}x{camera_height}@{self.config['camera_fps']} "
-                        f"for {target_width}x{target_height}",
+                        f"for {target_width}x{target_height} strip",
                         flush=True,
                     )
                 except Exception as exc:
-                    self.state.camera_ready = False
-                    self.state.set_error(f"ffmpeg camera failed: {exc}")
-                    time.sleep(1.0)
+                    self.state.set_camera_ready(self.index, False)
+                    self.state.set_error(f"{self.name_label} unavailable: {exc}")
+                    proc = None
+                    time.sleep(2.0)
                     continue
 
             frame_data = proc.stdout.read(frame_bytes)
             if len(frame_data) != frame_bytes:
-                self.state.camera_ready = False
-                self.state.set_error("ffmpeg camera stream ended; reconnecting")
+                self.state.set_camera_ready(self.index, False)
+                self.state.set_error(f"{self.name_label} stream ended; reconnecting")
                 proc.kill()
                 proc = None
-                time.sleep(0.2)
+                time.sleep(1.0)
                 continue
 
+            self.state.set_camera_ready(self.index, True)
             frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(camera_height, camera_width, 3)
             if mirror:
                 frame = cv2.flip(frame, 1)
-            frame, crop_size = center_crop_and_resize(frame, target_width, target_height)
-            self.state.set_camera_status(camera_width, camera_height, crop_size[0], crop_size[1])
-
-            with self.state.frame_lock:
-                self.state.raw_frame = frame.copy()
-                self.state.raw_frame_id += 1
-
-            count += 1
-            now = time.perf_counter()
-            if now - last_t >= 2.0:
-                self.state.camera_fps = (count - last_count) / (now - last_t)
-                last_count = count
-                last_t = now
+            self.publish(frame, camera_width, camera_height, target_width, target_height, generation)
+            self.update_fps(counters)
 
         if proc is not None:
             proc.terminate()
@@ -643,20 +729,18 @@ class CameraThread(threading.Thread):
                 proc.kill()
 
     def run(self):
-        if self.config.get("camera_backend") == "ffmpeg":
+        if self.config.get("camera_backend") == "ffmpeg" or is_test_source(self.device):
             self.run_ffmpeg()
             return
 
         mirror = bool(self.config["mirror"])
-        target_width, target_height, generation = self.state.resolution()
+        target_width, target_height, generation = self.state.tile_size(self.index)
         camera_width, camera_height = choose_camera_mode(target_width, target_height)
         cap = None
-        count = 0
-        last_count = 0
-        last_t = time.perf_counter()
+        counters = {"count": 0, "last_count": 0, "last_t": time.perf_counter()}
 
         while not self.state.stop_event.is_set():
-            current_width, current_height, current_generation = self.state.resolution()
+            current_width, current_height, current_generation = self.state.tile_size(self.index)
             current_camera_width, current_camera_height = choose_camera_mode(current_width, current_height)
             if current_generation != generation or (current_camera_width, current_camera_height) != (camera_width, camera_height):
                 generation = current_generation
@@ -673,23 +757,23 @@ class CameraThread(threading.Thread):
                     cap.release()
                 cap = self.open_camera(camera_width, camera_height)
                 if not cap.isOpened():
-                    self.state.camera_ready = False
-                    self.state.set_error(f"camera unavailable: {self.config['camera_device']}")
+                    self.state.set_camera_ready(self.index, False)
+                    self.state.set_error(f"{self.name_label} unavailable")
                     time.sleep(1.0)
                     continue
-                self.state.camera_ready = True
+                self.state.set_camera_ready(self.index, True)
                 self.state.clear_error()
                 print(
-                    f"camera opened {self.config['camera_device']} "
+                    f"{self.name_label} opened "
                     f"{camera_width}x{camera_height}@{self.config['camera_fps']} "
-                    f"for {target_width}x{target_height}",
+                    f"for {target_width}x{target_height} strip",
                     flush=True,
                 )
 
             ok, frame = cap.read()
             if not ok:
-                self.state.camera_ready = False
-                self.state.set_error("camera read failed; reconnecting")
+                self.state.set_camera_ready(self.index, False)
+                self.state.set_error(f"{self.name_label} read failed; reconnecting")
                 cap.release()
                 cap = None
                 time.sleep(0.2)
@@ -698,19 +782,8 @@ class CameraThread(threading.Thread):
             if mirror:
                 frame = cv2.flip(frame, 1)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame, crop_size = center_crop_and_resize(frame, target_width, target_height)
-            self.state.set_camera_status(camera_width, camera_height, crop_size[0], crop_size[1])
-
-            with self.state.frame_lock:
-                self.state.raw_frame = frame
-                self.state.raw_frame_id += 1
-
-            count += 1
-            now = time.perf_counter()
-            if now - last_t >= 2.0:
-                self.state.camera_fps = (count - last_count) / (now - last_t)
-                last_count = count
-                last_t = now
+            self.publish(frame, camera_width, camera_height, target_width, target_height, generation)
+            self.update_fps(counters)
 
         if cap is not None:
             cap.release()
@@ -1110,6 +1183,10 @@ class DisplayApp:
         if self.texture is not None:
             self.texture.delete()
         self.texture = image.get_texture().get_transform(flip_y=True)
+        # flip_y moves the anchor to the top edge; blit() subtracts the
+        # (unscaled) anchor, which shifted the image down by its own height.
+        self.texture.anchor_x = 0
+        self.texture.anchor_y = 0
         self.width = frame_width
         self.height = frame_height
 
@@ -1216,15 +1293,18 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    camera = CameraThread(state)
+    cameras = [CameraThread(state, index) for index in range(len(state.camera_devices))]
     inference = InferenceThread(state)
     osc = OscThread(state)
-    http = HttpThread(state)
 
-    camera.start()
+    for camera in cameras:
+        camera.start()
     inference.start()
     osc.start()
-    http.start()
+    if parse_bool(config.get("http_enabled", True)):
+        HttpThread(state).start()
+    else:
+        print("HTTP control disabled", flush=True)
 
     display = DisplayApp(state)
     try:
