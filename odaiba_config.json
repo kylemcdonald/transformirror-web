@@ -1,5 +1,6 @@
 {
-  "prompt": "a vivid oil painting of a city at night, glowing lights, rich color",
+  "prompts_file": "prompts-odaiba.txt",
+  "prompt_cycle_seconds": 30,
   "strength": 0.7,
   "steps": 2,
   "seed": 0,

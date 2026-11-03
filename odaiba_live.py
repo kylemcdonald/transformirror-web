@@ -15,7 +15,9 @@ That image goes through img2img. The result is the full 6144x768 LED wall
   image x 1920..3840 -> output (0, 768) to (3072, 1536)   right half of the wall
 
 Until the model is ready (about a minute after start) the raw composite is shown.
-Settings come from odaiba_config.json and are reloaded when the file changes.
+Prompts come from prompts-odaiba.txt (one per line), shown in order for
+prompt_cycle_seconds each. Settings come from odaiba_config.json. Both files
+are reloaded when they change.
 There is no audio and no web interface.
 
 Keys: Esc quits, R toggles raw/processed, G toggles guides, S toggles status.
@@ -38,6 +40,9 @@ from pyglet.gl import GL_LINEAR, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_TEXTUR
 from led_preview import Capture
 
 DEFAULT_CONFIG = {
+    "prompts_file": "prompts-odaiba.txt",
+    "prompt_cycle_seconds": 30,
+    # Used only if the prompts file is missing or empty.
     "prompt": "a vivid oil painting of a city at night, glowing lights, rich color",
     "strength": 0.7,
     "steps": 2,
@@ -58,9 +63,54 @@ class Config:
         self.mtime = None
         self.values = dict(DEFAULT_CONFIG)
         self.lock = threading.Lock()
+        self.prompts = []
+        self.prompts_path = None
+        self.prompts_mtime = None
+        self.prompt_index = 0
+        self.prompt_started = time.monotonic()
         self.reload()
 
     def reload(self):
+        self.reload_config()
+        self.reload_prompts()
+
+    def reload_prompts(self):
+        with self.lock:
+            path = self.path.parent / str(self.values["prompts_file"])
+        try:
+            mtime = path.stat().st_mtime
+        except FileNotFoundError:
+            if self.prompts:
+                print(f"prompts file missing: {path}", flush=True)
+            with self.lock:
+                self.prompts = []
+                self.prompts_path = path
+                self.prompts_mtime = None
+            return
+        if path == self.prompts_path and mtime == self.prompts_mtime:
+            return
+        prompts = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        with self.lock:
+            self.prompts = prompts
+            self.prompts_path = path
+            self.prompts_mtime = mtime
+            self.prompt_index %= max(1, len(prompts))
+        print(f"loaded {len(prompts)} prompts from {path.name}", flush=True)
+
+    def current_prompt(self):
+        """Returns (prompt, index, count), advancing every prompt_cycle_seconds."""
+        with self.lock:
+            if not self.prompts:
+                return str(self.values["prompt"]), 0, 0
+            now = time.monotonic()
+            cycle = max(1.0, float(self.values["prompt_cycle_seconds"]))
+            if now - self.prompt_started >= cycle:
+                self.prompt_index = (self.prompt_index + 1) % len(self.prompts)
+                self.prompt_started = now
+                print(f"prompt {self.prompt_index + 1}/{len(self.prompts)}: {self.prompts[self.prompt_index]}", flush=True)
+            return self.prompts[self.prompt_index], self.prompt_index, len(self.prompts)
+
+    def reload_config(self):
         try:
             mtime = self.path.stat().st_mtime
         except FileNotFoundError:
@@ -136,7 +186,7 @@ class Inference(threading.Thread):
             try:
                 result = processor.run(
                     images=[image],
-                    prompt=str(cfg["prompt"]),
+                    prompt=self.config.current_prompt()[0],
                     num_inference_steps=int(cfg["steps"]),
                     strength=float(cfg["strength"]),
                     seed=int(cfg["seed"]),
@@ -239,7 +289,7 @@ class Display:
                 f"capture: {self.capture.status} {self.capture.fps:.1f} fps   "
                 f"model: {self.inference.status} {self.inference.ms:.0f} ms   "
                 f"showing: {source}   display {self.draw_fps:.0f} fps\n"
-                f"prompt: {self.config.get()['prompt']}   [R] raw  [G] guides  [Esc] quit"
+                f"{self.prompt_label()}   [R] raw  [G] guides  [Esc] quit"
             )
             self.label.draw()
 
@@ -249,6 +299,10 @@ class Display:
             self.draw_fps = self.draw_count / (now - self.last_draw_t)
             self.draw_count = 0
             self.last_draw_t = now
+
+    def prompt_label(self):
+        prompt, index, count = self.config.current_prompt()
+        return f"prompt {index + 1}/{count}: {prompt}" if count else f"prompt: {prompt}"
 
     def on_key_press(self, symbol, _modifiers):
         if symbol == pyglet.window.key.ESCAPE:
