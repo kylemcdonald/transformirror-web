@@ -1,0 +1,9 @@
+{
+  "prompt": "a vivid oil painting of a city at night, glowing lights, rich color",
+  "strength": 0.7,
+  "steps": 2,
+  "seed": 0,
+  "mirror_crowd_camera": true,
+  "show_status": true,
+  "screen": null
+}
