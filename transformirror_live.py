@@ -28,6 +28,10 @@ DEFAULT_CONFIG = {
     # Use "testsrc" (or "testsrc:<lavfi filter>") for a synthetic source.
     "camera_devices": None,
     "camera_backend": "ffmpeg",
+    # Optional Blackmagic DeckLink/Intensity input. When set, one capture is
+    # split into strips using "regions" ([x, y, w, h] as fractions of the
+    # frame), left to right, and camera_device(s) are ignored.
+    "decklink": None,
     "camera_fps": 30,
     "display_index": 0,
     "display_offset_x": 0,
@@ -124,7 +128,23 @@ def center_crop_and_resize(frame, target_width, target_height):
     return resized, (crop_width, crop_height)
 
 
+def die_with_parent():
+    """Make a capture subprocess exit when this process dies, so a crashed or
+    killed runtime never leaves the camera/DeckLink input locked."""
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+    except Exception:
+        pass
+
+
 def camera_device_list(config):
+    decklink = config.get("decklink")
+    if decklink:
+        device = decklink.get("device", 0)
+        return [f"decklink{device}:region{index}" for index in range(len(decklink["regions"]))]
     devices = config.get("camera_devices")
     if not devices:
         devices = [config["camera_device"]]
@@ -644,7 +664,7 @@ class CameraThread(threading.Thread):
             "rgb24",
             "-",
         ]
-        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=die_with_parent)
 
     def publish(self, frame, camera_width, camera_height, target_width, target_height, generation):
         frame, crop_size = center_crop_and_resize(frame, target_width, target_height)
@@ -787,6 +807,124 @@ class CameraThread(threading.Thread):
 
         if cap is not None:
             cap.release()
+
+
+class DecklinkThread(threading.Thread):
+    """Captures one DeckLink input with GStreamer and splits it into strips."""
+
+    def __init__(self, state):
+        super().__init__(daemon=True)
+        self.state = state
+        self.settings = dict(state.config["decklink"])
+        self.regions = [tuple(float(v) for v in region) for region in self.settings["regions"]]
+        self.capture_width = int(self.settings.get("capture_width", 1920))
+        self.capture_height = int(self.settings.get("capture_height", 1080))
+        self.label = f"decklink {self.settings.get('device', 0)}"
+
+    def open_gstreamer(self):
+        source = [
+            "decklinkvideosrc",
+            f"device-number={int(self.settings.get('device', 0))}",
+            f"connection={self.settings.get('connection', 'hdmi')}",
+            f"mode={self.settings.get('mode', 'auto')}",
+            "drop-no-signal-frames=true",
+        ]
+        if self.settings.get("video_format"):
+            source.append(f"video-format={self.settings['video_format']}")
+        cmd = [
+            "gst-launch-1.0",
+            "-q",
+            *source,
+            "!",
+            "queue",
+            "max-size-buffers=2",
+            "max-size-bytes=0",
+            "max-size-time=0",
+            "leaky=downstream",
+            "!",
+            "videoconvertscale",
+            f"n-threads={int(self.settings.get('threads', 4))}",
+            "!",
+            f"video/x-raw,format=RGB,width={self.capture_width},height={self.capture_height}",
+            "!",
+            "fdsink",
+            "fd=1",
+            "sync=false",
+        ]
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=die_with_parent)
+
+    def region_pixels(self, region):
+        x, y, w, h = region
+        x1 = int(round(clamp(x, 0.0, 1.0) * self.capture_width))
+        y1 = int(round(clamp(y, 0.0, 1.0) * self.capture_height))
+        x2 = int(round(clamp(x + w, 0.0, 1.0) * self.capture_width))
+        y2 = int(round(clamp(y + h, 0.0, 1.0) * self.capture_height))
+        return x1, y1, max(x1 + 1, x2), max(y1 + 1, y2)
+
+    def set_ready(self, ready):
+        for index in range(len(self.regions)):
+            self.state.set_camera_ready(index, ready)
+
+    def run(self):
+        mirror = bool(self.state.config["mirror"])
+        frame_bytes = self.capture_width * self.capture_height * 3
+        regions = [self.region_pixels(region) for region in self.regions]
+        proc = None
+        count = 0
+        last_count = 0
+        last_t = time.perf_counter()
+
+        while not self.state.stop_event.is_set():
+            if proc is None or proc.poll() is not None:
+                if proc is not None:
+                    proc.kill()
+                try:
+                    proc = self.open_gstreamer()
+                    print(
+                        f"{self.label} opened, capturing {self.capture_width}x{self.capture_height}, "
+                        f"regions {regions}",
+                        flush=True,
+                    )
+                except Exception as exc:
+                    self.set_ready(False)
+                    self.state.set_error(f"{self.label} unavailable: {exc}")
+                    proc = None
+                    time.sleep(2.0)
+                    continue
+
+            frame_data = proc.stdout.read(frame_bytes)
+            if len(frame_data) != frame_bytes:
+                self.set_ready(False)
+                self.state.set_error(f"{self.label} stream ended (no signal or input busy); reconnecting")
+                proc.kill()
+                proc = None
+                time.sleep(2.0)
+                continue
+
+            frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(self.capture_height, self.capture_width, 3)
+            for index, (x1, y1, x2, y2) in enumerate(regions):
+                target_width, target_height, generation = self.state.tile_size(index)
+                strip = frame[y1:y2, x1:x2]
+                if mirror:
+                    strip = cv2.flip(strip, 1)
+                strip, crop_size = center_crop_and_resize(strip, target_width, target_height)
+                self.state.set_camera_status(x2 - x1, y2 - y1, crop_size[0], crop_size[1])
+                self.state.set_camera_ready(index, True)
+                self.state.publish_camera_tile(index, strip, generation)
+
+            count += 1
+            now = time.perf_counter()
+            if now - last_t >= 2.0:
+                self.state.camera_fps = (count - last_count) / (now - last_t)
+                last_count = count
+                last_t = now
+
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 class InferenceThread(threading.Thread):
@@ -1293,7 +1431,10 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    cameras = [CameraThread(state, index) for index in range(len(state.camera_devices))]
+    if config.get("decklink"):
+        cameras = [DecklinkThread(state)]
+    else:
+        cameras = [CameraThread(state, index) for index in range(len(state.camera_devices))]
     inference = InferenceThread(state)
     osc = OscThread(state)
 

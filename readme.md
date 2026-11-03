@@ -49,16 +49,28 @@ If the prebuilt stable-fast wheel is not compatible with the local CUDA/PyTorch 
 
 ### Odaiba: two cameras, native only
 
-The `odaiba` branch combines two webcams into a single `1024x512` diffusion input: each camera is center-cropped to `512x512` and placed side by side, left to right in `camera_devices` order (each strip is mirrored when `mirror` is true). The result is shown fullscreen with Pyglet; the HTTP/web control server is off (`"http_enabled": false`), and OSC still works.
+The `odaiba` branch combines two cameras into a single `1024x512` diffusion input: each camera is center-cropped to `512x512` and placed side by side. The result is shown fullscreen with Pyglet; the HTTP/web control server is off (`"http_enabled": false`), and OSC still works.
+
+At Odaiba both cameras arrive on one HDMI signal into a Blackmagic Intensity Pro 4K: a 3840x2160 frame with camera 1 in the top-left quadrant and camera 2 in the top-right (the bottom half is black). The `decklink` setting captures it with GStreamer (`decklinkvideosrc`, scaled to 1920x1080 in GStreamer) and splits it into strips using `regions`, given as `[x, y, w, h]` fractions of the frame, left to right:
 
 ```
 "width": 1024,
 "height": 512,
-"camera_devices": ["/dev/video0", "/dev/video2"],
+"mirror": false,
+"decklink": {
+  "device": 0,
+  "connection": "hdmi",
+  "mode": "auto",
+  "capture_width": 1920,
+  "capture_height": 1080,
+  "regions": [[0, 0, 0.5, 0.5], [0.5, 0, 0.5, 0.5]]
+},
 "http_enabled": false
 ```
 
-Each USB webcam usually creates two `/dev/video*` nodes, so the second camera is often `/dev/video2`. Run `v4l2-ctl --list-devices` to check, and prefer the stable `/dev/v4l/by-id/...-video-index0` paths so the left/right order survives replugging. A missing or disconnected camera leaves its strip black and is retried every couple of seconds. For testing without hardware, use a synthetic source such as `"testsrc"` or `"testsrc:mandelbrot=size=1280x720:rate=30"`.
+Only one program can open the DeckLink input at a time, so close Blackmagic Media Express or any `gst-launch-1.0 decklinkvideosrc` preview before starting. With no signal or a busy input, the strips stay black and capture retries every two seconds.
+
+Without `decklink`, `camera_devices` lists USB webcams instead (one strip each, e.g. `["/dev/video0", "/dev/video2"]`; prefer `/dev/v4l/by-id/...` paths). For testing without hardware, use a synthetic camera such as `"testsrc"` or `"testsrc:mandelbrot=size=1280x720:rate=30"`.
 
 ### Running manually
 
