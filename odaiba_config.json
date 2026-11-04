@@ -1,6 +1,8 @@
 {
   "prompts_file": "prompts-odaiba.txt",
-  "prompt_cycle_seconds": 30,
+  "prompt_cycle_seconds": 15,
+  "camera_hold_seconds": 60,
+  "camera_fade_seconds": 60,
   "strength": 0.7,
   "steps": 2,
   "seed": 0,

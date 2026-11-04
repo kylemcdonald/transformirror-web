@@ -4,13 +4,16 @@ Input: one DeckLink HDMI signal (3840x2160). Its top half holds two cameras:
   camera 1 (outward-facing) at (0, 0, 1920, 1080)
   camera 2 (crowd-facing)   at (1920, 0, 1920, 1080)
 
-From each camera we take the centered 4:1 crop (1920x480) and compose one
-3840x480 image:
-  [ camera 1 left half | camera 2, mirrored | camera 1 right half ]
-     960 px               1920 px              960 px
+From each camera we take the centered 8:1 crop (1920x240). Only one camera is
+shown at a time, with a slow crossfade between them (camera 2 is mirrored):
+  camera 1 for camera_hold_seconds
+  crossfade to camera 2 over camera_fade_seconds
+  camera 2 for camera_hold_seconds
+  crossfade to camera 1 over camera_fade_seconds
 
-That image goes through img2img. The result is the full 6144x768 LED wall
-(scaled 1.6x), split across the 3840x2160 output that the LED processor samples:
+The blended 1920x240 frame is scaled 2x to 3840x480 and goes through img2img.
+The result is the full 6144x768 LED wall (scaled 1.6x), split across the
+3840x2160 output that the LED processor samples:
   image x 0..1920    -> output (0, 0)   to (3072, 768)    left half of the wall
   image x 1920..3840 -> output (0, 768) to (3072, 1536)   right half of the wall
 
@@ -21,6 +24,9 @@ are reloaded when they change.
 There is no audio and no web interface.
 
 Keys: Esc quits, R toggles raw/processed, G toggles guides, S toggles status.
+
+Sending SIGUSR1 saves input/output JPEG pairs to stills/ for camera 1, camera 2
+and the 50-50 blend, each as the crossfade reaches it (up to one full cycle).
 """
 
 import argparse
@@ -32,6 +38,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 import pyglet
 from pyglet import shapes
@@ -41,7 +48,9 @@ from led_preview import Capture
 
 DEFAULT_CONFIG = {
     "prompts_file": "prompts-odaiba.txt",
-    "prompt_cycle_seconds": 30,
+    "prompt_cycle_seconds": 15,
+    "camera_hold_seconds": 60,
+    "camera_fade_seconds": 60,
     # Used only if the prompts file is missing or empty.
     "prompt": "a vivid oil painting of a city at night, glowing lights, rich color",
     "strength": 0.7,
@@ -52,9 +61,13 @@ DEFAULT_CONFIG = {
     "screen": None,
 }
 
-WIDTH, HEIGHT = 3840, 480  # composed diffusion input/output
+CROP_W, CROP_H = 1920, 240  # centered crop of each camera
+WIDTH, HEIGHT = 3840, 480  # diffusion input/output
 PANEL_W, PANEL_H = 3072, 768  # each half of the 6144x768 wall on the output
 OUTPUT_W, OUTPUT_H = 3840, 2160
+STILLS_DIR = Path("stills")
+STILL_TARGETS = {"camera1": 0.0, "camera2": 1.0, "blend50": 0.5}
+STILL_TOLERANCE = 0.004  # wider than the blend change between two diffusion frames
 
 
 class Config:
@@ -68,6 +81,7 @@ class Config:
         self.prompts_mtime = None
         self.prompt_index = 0
         self.prompt_started = time.monotonic()
+        self.started = time.monotonic()
         self.reload()
 
     def reload(self):
@@ -131,14 +145,41 @@ class Config:
         with self.lock:
             return dict(self.values)
 
+    def camera_blend(self):
+        """Where the crossfade is now: 0 is camera 1, 1 is camera 2."""
+        cfg = self.get()
+        hold = max(0.0, float(cfg["camera_hold_seconds"]))
+        fade = max(0.0, float(cfg["camera_fade_seconds"]))
+        t = (time.monotonic() - self.started) % max(1.0, 2 * (hold + fade))
+        if t < hold:
+            return 0.0
+        t -= hold
+        if t < fade:
+            return t / fade
+        t -= fade
+        if t < hold:
+            return 1.0
+        return 1.0 - (t - hold) / fade
 
-def compose(band, mirror_crowd):
-    """band is the 3840x480 strip: camera 1 in x<1920, camera 2 in x>=1920."""
-    cam1 = band[:, :1920]
-    cam2 = band[:, 1920:]
-    if mirror_crowd:
-        cam2 = cam2[:, ::-1]
-    return np.ascontiguousarray(np.concatenate([cam1[:, :960], cam2, cam1[:, 960:]], axis=1))
+
+def blend_cameras(band, blend, mirror_crowd):
+    """band is the 3840x240 strip: camera 1 in x<1920, camera 2 in x>=1920."""
+    cam1 = np.ascontiguousarray(band[:, :CROP_W])
+    cam2 = band[:, CROP_W:]
+    cam2 = np.ascontiguousarray(cam2[:, ::-1] if mirror_crowd else cam2)
+    if blend <= 0.0:
+        return cam1
+    if blend >= 1.0:
+        return cam2
+    return cv2.addWeighted(cam1, 1.0 - blend, cam2, blend, 0.0)
+
+
+def upscale(frame):
+    return cv2.resize(frame, (WIDTH, HEIGHT), interpolation=cv2.INTER_CUBIC)
+
+
+def save_jpeg(path, frame):
+    cv2.imwrite(str(path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 95])
 
 
 class Inference(threading.Thread):
@@ -154,6 +195,20 @@ class Inference(threading.Thread):
         self.status = "loading model"
         self.ms = 0.0
         self.fps = 0.0
+        self.stills_pending = {}
+
+    def request_stills(self):
+        self.stills_pending = dict(STILL_TARGETS)
+        print("stills requested", flush=True)
+
+    def save_stills(self, blend, frame, output, prompt):
+        for name, target in list(self.stills_pending.items()):
+            if abs(blend - target) <= STILL_TOLERANCE:
+                STILLS_DIR.mkdir(exist_ok=True)
+                save_jpeg(STILLS_DIR / f"{name}-input.jpg", frame)
+                save_jpeg(STILLS_DIR / f"{name}-output.jpg", output)
+                del self.stills_pending[name]
+                print(f"saved {name} stills at blend {blend:.3f}: {prompt}", flush=True)
 
     def run(self):
         from diffusion_processor import DiffusionProcessor
@@ -181,12 +236,15 @@ class Inference(threading.Thread):
                 continue
             last_id = frame_id
             cfg = self.config.get()
-            image = compose(band, cfg["mirror_crowd_camera"]).astype(np.float32) / 255.0
+            blend = self.config.camera_blend()
+            frame = blend_cameras(band, blend, cfg["mirror_crowd_camera"])
+            image = upscale(frame).astype(np.float32) / 255.0
+            prompt = self.config.current_prompt()[0]
             started = time.perf_counter()
             try:
                 result = processor.run(
                     images=[image],
-                    prompt=self.config.current_prompt()[0],
+                    prompt=prompt,
                     num_inference_steps=int(cfg["steps"]),
                     strength=float(cfg["strength"]),
                     seed=int(cfg["seed"]),
@@ -200,6 +258,7 @@ class Inference(threading.Thread):
             with self.lock:
                 self.output = out
                 self.output_id += 1
+            self.save_stills(blend, frame, out, prompt)
             self.ms = (time.perf_counter() - started) * 1000.0
             self.status = "running"
             count += 1
@@ -265,7 +324,7 @@ class Display:
                 return
         band, frame_id = self.capture.latest()
         if band is not None and self.uploaded != ("raw", frame_id):
-            self.upload(compose(band, cfg["mirror_crowd_camera"]))
+            self.upload(upscale(blend_cameras(band, self.config.camera_blend(), cfg["mirror_crowd_camera"])))
             self.uploaded = ("raw", frame_id)
 
     def placements(self):
@@ -288,7 +347,8 @@ class Display:
             self.label.text = (
                 f"capture: {self.capture.status} {self.capture.fps:.1f} fps   "
                 f"model: {self.inference.status} {self.inference.ms:.0f} ms   "
-                f"showing: {source}   display {self.draw_fps:.0f} fps\n"
+                f"showing: {source}   camera 2 blend {self.config.camera_blend():.0%}   "
+                f"display {self.draw_fps:.0f} fps\n"
                 f"{self.prompt_label()}   [R] raw  [G] guides  [Esc] quit"
             )
             self.label.draw()
@@ -327,7 +387,7 @@ def main():
         signal_height=2160,
         camera_width=1920,
         camera_height=1080,
-        crop_height=HEIGHT,
+        crop_height=CROP_H,
     )
     capture = Capture(capture_args)
     stop = threading.Event()
@@ -338,6 +398,7 @@ def main():
     display = Display(capture, inference, config, config.get()["screen"])
     pyglet.clock.schedule_interval(lambda _dt: config.reload(), 1.0)
     signal.signal(signal.SIGTERM, lambda *_: pyglet.app.exit())
+    signal.signal(signal.SIGUSR1, lambda *_: inference.request_stills())
     try:
         pyglet.app.run(1 / 60)
     finally:
