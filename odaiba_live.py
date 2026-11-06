@@ -11,7 +11,8 @@ shown at a time, with a slow crossfade between them (camera 2 is mirrored):
   camera 2 for camera_hold_seconds
   crossfade to camera 1 over camera_fade_seconds
 
-The blended 3840x480 frame goes through img2img. The result is the full
+The blended 3840x480 frame goes through img2img, scaled 2x to 7680x960 first if
+upsample_2x is set (read at startup only). The result is the full
 6144x768 LED wall (scaled 1.6x), split across the 3840x2160 output that the LED
 processor samples:
   image x 0..1920    -> output (0, 0)   to (3072, 768)    left half of the wall
@@ -51,6 +52,7 @@ DEFAULT_CONFIG = {
     "prompt_cycle_seconds": 15,
     "camera_hold_seconds": 60,
     "camera_fade_seconds": 60,
+    "upsample_2x": False,
     # Used only if the prompts file is missing or empty.
     "prompt": "a vivid oil painting of a city at night, glowing lights, rich color",
     "strength": 0.7,
@@ -66,8 +68,9 @@ CAMERA_H = 1080
 PANEL_W, PANEL_H = 3072, 768  # each half of the 6144x768 wall on the output
 OUTPUT_W, OUTPUT_H = 3840, 2160
 STILLS_DIR = Path("stills")
-STILL_TARGETS = {"camera1": 0.0, "camera2": 1.0, "blend50": 0.5}
-STILL_TOLERANCE = 0.004  # wider than the blend change between two diffusion frames
+# name: (blend, tolerance). The tolerance must be wider than the blend change
+# between two diffusion frames, or the crossfade can pass the target unsaved.
+STILL_TARGETS = {"camera1": (0.0, 0.0), "camera2": (1.0, 0.0), "blend50": (0.5, 0.02)}
 
 
 class Config:
@@ -174,16 +177,23 @@ def blend_cameras(rows, blend, mirror_crowd):
     return cv2.addWeighted(cam1, 1.0 - blend, cam2, blend, 0.0)
 
 
+def upscale(frame, scale):
+    if scale == 1:
+        return frame
+    return cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+
 def save_jpeg(path, frame):
     cv2.imwrite(str(path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 95])
 
 
 class Inference(threading.Thread):
-    def __init__(self, capture, config, stop):
+    def __init__(self, capture, config, stop, scale):
         super().__init__(daemon=True)
         self.capture = capture
         self.config = config
         self.stop = stop
+        self.scale = scale
         self.lock = threading.Lock()
         self.output = None
         self.output_id = 0
@@ -198,8 +208,8 @@ class Inference(threading.Thread):
         print("stills requested", flush=True)
 
     def save_stills(self, blend, frame, output, prompt):
-        for name, target in list(self.stills_pending.items()):
-            if abs(blend - target) <= STILL_TOLERANCE:
+        for name, (target, tolerance) in list(self.stills_pending.items()):
+            if abs(blend - target) <= tolerance:
                 STILLS_DIR.mkdir(exist_ok=True)
                 save_jpeg(STILLS_DIR / f"{name}-input.jpg", frame)
                 save_jpeg(STILLS_DIR / f"{name}-output.jpg", output)
@@ -211,7 +221,7 @@ class Inference(threading.Thread):
 
         while not self.stop.is_set():
             try:
-                processor = DiffusionProcessor(warmup=f"1x{HEIGHT}x{WIDTH}x3", local_files_only=True, gpu_id=0)
+                processor = DiffusionProcessor(warmup=f"1x{HEIGHT * self.scale}x{WIDTH * self.scale}x3", local_files_only=True, gpu_id=0)
                 break
             except Exception as exc:
                 self.status = f"model load failed: {exc}"
@@ -234,7 +244,7 @@ class Inference(threading.Thread):
             cfg = self.config.get()
             blend = self.config.camera_blend()
             frame = blend_cameras(rows, blend, cfg["mirror_crowd_camera"])
-            image = frame.astype(np.float32) / 255.0
+            image = upscale(frame, self.scale).astype(np.float32) / 255.0
             prompt = self.config.current_prompt()[0]
             started = time.perf_counter()
             try:
@@ -271,7 +281,10 @@ class Inference(threading.Thread):
 
 
 class Display:
-    def __init__(self, capture, inference, config, screen_index):
+    def __init__(self, capture, inference, config, screen_index, scale):
+        self.scale = scale
+        self.image_w = WIDTH * scale
+        self.image_h = HEIGHT * scale
         self.capture = capture
         self.inference = inference
         self.config = config
@@ -293,20 +306,20 @@ class Display:
         self.window.set_mouse_visible(False)
         self.window.push_handlers(on_draw=self.on_draw, on_key_press=self.on_key_press)
 
-        self.texture = pyglet.image.Texture.create(WIDTH, HEIGHT)
+        self.texture = pyglet.image.Texture.create(self.image_w, self.image_h)
         glBindTexture(GL_TEXTURE_2D, self.texture.id)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
         self.halves = [
-            self.texture.get_region(0, 0, WIDTH // 2, HEIGHT),
-            self.texture.get_region(WIDTH // 2, 0, WIDTH // 2, HEIGHT),
+            self.texture.get_region(0, 0, self.image_w // 2, self.image_h),
+            self.texture.get_region(self.image_w // 2, 0, self.image_w // 2, self.image_h),
         ]
         self.label = pyglet.text.Label(
             "", font_size=28, x=40, y=40, anchor_y="bottom", color=(200, 200, 200, 255), multiline=True, width=3600
         )
 
     def upload(self, frame):
-        image = pyglet.image.ImageData(WIDTH, HEIGHT, "RGB", frame.tobytes(), pitch=-WIDTH * 3)
+        image = pyglet.image.ImageData(self.image_w, self.image_h, "RGB", frame.tobytes(), pitch=-self.image_w * 3)
         self.texture.blit_into(image, 0, 0, 0)
 
     def update_texture(self):
@@ -320,7 +333,7 @@ class Display:
                 return
         rows, frame_id = self.capture.latest()
         if rows is not None and self.uploaded != ("raw", frame_id):
-            self.upload(blend_cameras(rows, self.config.camera_blend(), cfg["mirror_crowd_camera"]))
+            self.upload(upscale(blend_cameras(rows, self.config.camera_blend(), cfg["mirror_crowd_camera"]), self.scale))
             self.uploaded = ("raw", frame_id)
 
     def placements(self):
@@ -387,11 +400,12 @@ def main():
     )
     capture = Capture(capture_args)
     stop = threading.Event()
-    inference = Inference(capture, config, stop)
+    scale = 2 if config.get()["upsample_2x"] else 1
+    inference = Inference(capture, config, stop, scale)
     capture.start()
     inference.start()
 
-    display = Display(capture, inference, config, config.get()["screen"])
+    display = Display(capture, inference, config, config.get()["screen"], scale)
     pyglet.clock.schedule_interval(lambda _dt: config.reload(), 1.0)
     signal.signal(signal.SIGTERM, lambda *_: pyglet.app.exit())
     signal.signal(signal.SIGUSR1, lambda *_: inference.request_stills())
