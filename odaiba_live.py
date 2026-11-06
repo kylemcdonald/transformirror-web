@@ -1,18 +1,17 @@
 """Odaiba live installation: two cameras -> SDXL Turbo img2img -> LED wall.
 
-Input: one DeckLink HDMI signal (3840x2160). Its top half holds two cameras:
-  camera 1 (outward-facing) at (0, 0, 1920, 1080)
-  camera 2 (crowd-facing)   at (1920, 0, 1920, 1080)
+Input: one DeckLink HDMI signal (3840x2160) with the cameras stacked:
+  camera 1 (outward-facing) at (0, 0, 3840, 1080)
+  camera 2 (crowd-facing)   at (0, 1080, 3840, 1080)
 
-From each camera we take the centered 8:1 crop (1920x240). Only one camera is
+From each camera we take the centered 8:1 crop (3840x480). Only one camera is
 shown at a time, with a slow crossfade between them (camera 2 is mirrored):
   camera 1 for camera_hold_seconds
   crossfade to camera 2 over camera_fade_seconds
   camera 2 for camera_hold_seconds
   crossfade to camera 1 over camera_fade_seconds
 
-The blended 1920x240 frame is scaled 2x to 3840x480 and goes through img2img.
-The result is the full 6144x768 LED wall (scaled 1.6x), split across the
+The blended 3840x480 frame goes through img2img. The result is the full 6144x768 LED wall (scaled 1.6x), split across the
 3840x2160 output that the LED processor samples:
   image x 0..1920    -> output (0, 0)   to (3072, 768)    left half of the wall
   image x 1920..3840 -> output (0, 768) to (3072, 1536)   right half of the wall
@@ -61,8 +60,8 @@ DEFAULT_CONFIG = {
     "screen": None,
 }
 
-CROP_W, CROP_H = 1920, 240  # centered crop of each camera
-WIDTH, HEIGHT = 3840, 480  # diffusion input/output
+WIDTH, HEIGHT = 3840, 480  # centered crop of each camera, and diffusion input/output
+CAMERA_H = 1080
 PANEL_W, PANEL_H = 3072, 768  # each half of the 6144x768 wall on the output
 OUTPUT_W, OUTPUT_H = 3840, 2160
 STILLS_DIR = Path("stills")
@@ -162,20 +161,16 @@ class Config:
         return 1.0 - (t - hold) / fade
 
 
-def blend_cameras(band, blend, mirror_crowd):
-    """band is the 3840x240 strip: camera 1 in x<1920, camera 2 in x>=1920."""
-    cam1 = np.ascontiguousarray(band[:, :CROP_W])
-    cam2 = band[:, CROP_W:]
+def blend_cameras(rows, blend, mirror_crowd):
+    """rows starts at camera 1's crop and ends with camera 2's crop."""
+    cam1 = rows[:HEIGHT]
+    cam2 = rows[CAMERA_H:]
     cam2 = np.ascontiguousarray(cam2[:, ::-1] if mirror_crowd else cam2)
     if blend <= 0.0:
         return cam1
     if blend >= 1.0:
         return cam2
     return cv2.addWeighted(cam1, 1.0 - blend, cam2, blend, 0.0)
-
-
-def upscale(frame):
-    return cv2.resize(frame, (WIDTH, HEIGHT), interpolation=cv2.INTER_CUBIC)
 
 
 def save_jpeg(path, frame):
@@ -230,15 +225,15 @@ class Inference(threading.Thread):
         count = 0
         last_t = time.perf_counter()
         while not self.stop.is_set():
-            band, frame_id = self.capture.latest()
-            if band is None or frame_id == last_id:
+            rows, frame_id = self.capture.latest()
+            if rows is None or frame_id == last_id:
                 time.sleep(0.002)
                 continue
             last_id = frame_id
             cfg = self.config.get()
             blend = self.config.camera_blend()
-            frame = blend_cameras(band, blend, cfg["mirror_crowd_camera"])
-            image = upscale(frame).astype(np.float32) / 255.0
+            frame = blend_cameras(rows, blend, cfg["mirror_crowd_camera"])
+            image = frame.astype(np.float32) / 255.0
             prompt = self.config.current_prompt()[0]
             started = time.perf_counter()
             try:
@@ -322,9 +317,9 @@ class Display:
                     self.upload(output)
                     self.uploaded = ("processed", output_id)
                 return
-        band, frame_id = self.capture.latest()
-        if band is not None and self.uploaded != ("raw", frame_id):
-            self.upload(upscale(blend_cameras(band, self.config.camera_blend(), cfg["mirror_crowd_camera"])))
+        rows, frame_id = self.capture.latest()
+        if rows is not None and self.uploaded != ("raw", frame_id):
+            self.upload(blend_cameras(rows, self.config.camera_blend(), cfg["mirror_crowd_camera"]))
             self.uploaded = ("raw", frame_id)
 
     def placements(self):
@@ -385,9 +380,9 @@ def main():
         threads=4,
         signal_width=3840,
         signal_height=2160,
-        camera_width=1920,
-        camera_height=1080,
-        crop_height=CROP_H,
+        # Capture crops a centered block of rows: 300..1860 spans both camera crops.
+        camera_height=2 * CAMERA_H,
+        crop_height=CAMERA_H + HEIGHT,
     )
     capture = Capture(capture_args)
     stop = threading.Event()
