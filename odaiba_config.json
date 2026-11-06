@@ -3,7 +3,7 @@
   "prompt_cycle_seconds": 15,
   "camera_hold_seconds": 60,
   "camera_fade_seconds": 60,
-  "upsample_2x": true,
+  "upsample_2x": false,
   "strength": 0.7,
   "steps": 2,
   "seed": 0,
