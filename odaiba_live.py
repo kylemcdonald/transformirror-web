@@ -11,8 +11,9 @@ shown at a time, with a slow crossfade between them (camera 2 is mirrored):
   camera 2 for camera_hold_seconds
   crossfade to camera 1 over camera_fade_seconds
 
-The blended 3840x480 frame goes through img2img. The result is the full 6144x768 LED wall (scaled 1.6x), split across the
-3840x2160 output that the LED processor samples:
+The blended 3840x480 frame goes through img2img. The result is the full
+6144x768 LED wall (scaled 1.6x), split across the 3840x2160 output that the LED
+processor samples:
   image x 0..1920    -> output (0, 0)   to (3072, 768)    left half of the wall
   image x 1920..3840 -> output (0, 768) to (3072, 1536)   right half of the wall
 
