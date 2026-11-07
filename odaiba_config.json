@@ -4,6 +4,7 @@
   "camera_hold_seconds": 60,
   "camera_fade_seconds": 60,
   "motion_threshold": 3.0,
+  "compile_model": true,
   "strength": 0.7,
   "steps": 2,
   "seed": 0,

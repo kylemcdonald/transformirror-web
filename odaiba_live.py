@@ -29,7 +29,8 @@ The wall image becomes the full 6144x768 LED wall (scaled 0.8x), split across th
 Until the model is ready (about a minute after start) the raw composite is shown.
 Prompts come from prompts-odaiba.txt (one per line), shown in order for
 prompt_cycle_seconds each. Settings come from odaiba_config.json. Both files
-are reloaded when they change, but strength, steps and seed are read at startup.
+are reloaded when they change, but strength, steps, seed and compile_model are read
+at startup.
 There is no audio and no web interface.
 
 Keys: Esc quits, R toggles raw/processed, G toggles guides, S toggles status.
@@ -61,6 +62,7 @@ DEFAULT_CONFIG = {
     "camera_hold_seconds": 60,
     "camera_fade_seconds": 60,
     "motion_threshold": 3.0,
+    "compile_model": True,
     # Used only if the prompts file is missing or empty.
     "prompt": "a vivid oil painting of a city at night, glowing lights, rich color",
     "strength": 0.7,
@@ -225,13 +227,19 @@ class Inference(threading.Thread):
         from odaiba_tiles import TILES, MotionPicker, Stylizer, Wall
 
         cfg = self.config.get()
-        stylizer = Stylizer(self.config.current_prompt()[0], int(cfg["seed"]), int(cfg["steps"]), float(cfg["strength"]))
-        wall = Wall(stylizer, margin=64, shared_noise=True)
-        picker = MotionPicker(float(cfg["motion_threshold"]))
-        blank = torch.zeros(3, WALL_H, WALL_W, device=stylizer.device, dtype=torch.float16)
-        for tiles in (list(range(TILES)), [0]) * 2:
-            wall.update(blank, tiles)
-        return stylizer, wall, picker
+        stylizer = Stylizer(
+            self.config.current_prompt()[0],
+            int(cfg["seed"]),
+            int(cfg["steps"]),
+            float(cfg["strength"]),
+            compiled=bool(cfg["compile_model"]),
+        )
+        with torch.inference_mode():
+            wall = Wall(stylizer, margin=64, shared_noise=True)
+            blank = torch.zeros(3, WALL_H, WALL_W, device=stylizer.device, dtype=torch.float16)
+            for tiles in (list(range(TILES)), [0]) * 2:
+                wall.update(blank, tiles)
+        return stylizer, wall, MotionPicker(float(cfg["motion_threshold"]))
 
     def publish(self, wall, tiles):
         """Copies the columns these tiles touched to the CPU, for the display."""
@@ -256,12 +264,6 @@ class Inference(threading.Thread):
     def run(self):
         import torch
 
-        with torch.inference_mode():
-            self.loop()
-
-    def loop(self):
-        from odaiba_tiles import TILES, to_gpu
-
         while not self.stop.is_set():
             try:
                 stylizer, wall, picker = self.load()
@@ -275,6 +277,12 @@ class Inference(threading.Thread):
 
         self.ready = True
         self.status = "running"
+        with torch.inference_mode():
+            self.loop(stylizer, wall, picker)
+
+    def loop(self, stylizer, wall, picker):
+        from odaiba_tiles import TILES, to_gpu
+
         shown_prompt = None
         last_id = -1
         updates = [0] * TILES
