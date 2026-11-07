@@ -1,4 +1,7 @@
-"""Offline experiment: render the Odaiba wall at full 7680x960 from 960x960 tiles.
+"""Renders the Odaiba wall at full 7680x960 from 960x960 tiles.
+
+Stylizer, Wall and MotionPicker are what odaiba_live.py runs. Run as a script, this
+is the offline experiment they came from.
 
 Takes the centered 3840x480 crop of each stacked camera in a recording, scales it
 2x to 7680x960, runs SDXL Turbo img2img on 960x960 tiles and writes one video per
@@ -233,6 +236,10 @@ class MotionPicker:
         self.threshold = threshold
         self.reference = None
 
+    def reset(self, frame):
+        """Every tile has just been updated from this frame."""
+        self.reference = self.small(frame)
+
     def small(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         gray = cv2.resize(gray, (MOTION_W, MOTION_H), interpolation=cv2.INTER_AREA).astype(np.float32)
@@ -276,9 +283,9 @@ def open_writer(path, fps):
 
 
 def to_gpu(frame, device):
-    """Scales a 3840x480 crop to 7680x960, as upsample_2x does in the app."""
-    frame = cv2.resize(frame, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    return torch.from_numpy(frame).to(device).permute(2, 0, 1).half() / 255
+    """Scales an RGB uint8 frame 2x with bicubic. Returns 3xHxW half in 0..1."""
+    pixels = torch.from_numpy(np.ascontiguousarray(frame)).to(device).permute(2, 0, 1)[None].float() / 255
+    return F.interpolate(pixels, scale_factor=2, mode="bicubic")[0].clamp_(0, 1).half()
 
 
 def render(stylizer, args, camera, variant, fps):
