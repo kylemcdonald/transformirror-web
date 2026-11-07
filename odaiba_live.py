@@ -11,8 +11,8 @@ shown at a time, with a slow crossfade between them (camera 2 is mirrored):
   camera 2 for camera_hold_seconds
   crossfade to camera 1 over camera_fade_seconds
 
-The blended 3840x480 frame is scaled 2x to 7680x960 and stylized with SDXL Turbo
-img2img in eight 960x960 tiles (see odaiba_tiles.py). Stylizing the whole wall for
+The blended 3840x480 frame is scaled 1.6x to 6144x768 and stylized with SDXL Turbo
+img2img in eight 768x768 tiles (see odaiba_tiles.py). Stylizing the whole wall for
 every frame would be too slow, so only the tile that has changed most since its own
 last update is processed, and it is matched to the frozen tiles on either side of
 it. A tile needs a change above motion_threshold, so a still scene costs nothing.
@@ -21,10 +21,10 @@ All eight tiles are processed together when the prompt changes. Otherwise quiet
 tiles would keep the old prompt, and new tiles would be matched to old colors. This
 also means no tile is ever more than prompt_cycle_seconds old.
 
-The wall image becomes the full 6144x768 LED wall (scaled 0.8x), split across the
-3840x2160 output that the LED processor samples:
-  image x 0..3840    -> output (0, 0)   to (3072, 768)    left half of the wall
-  image x 3840..7680 -> output (0, 768) to (3072, 1536)   right half of the wall
+The result is the full 6144x768 LED wall, pixel for pixel, split across the 3840x2160
+output that the LED processor samples:
+  image x 0..3072    -> output (0, 0)   to (3072, 768)    left half of the wall
+  image x 3072..6144 -> output (0, 768) to (3072, 1536)   right half of the wall
 
 Until the model is ready (about a minute after start) the raw composite is shown.
 Prompts come from prompts-odaiba.txt (one per line), shown in order for
@@ -74,9 +74,9 @@ DEFAULT_CONFIG = {
 }
 
 WIDTH, HEIGHT = 3840, 480  # centered crop of each camera
-WALL_W, WALL_H = 2 * WIDTH, 2 * HEIGHT  # the stylized image
 CAMERA_H = 1080
-PANEL_W, PANEL_H = 3072, 768  # each half of the 6144x768 wall on the output
+PANEL_W, PANEL_H = 3072, 768  # each half of the wall on the output
+WALL_W, WALL_H = 2 * PANEL_W, PANEL_H  # the stylized image
 OUTPUT_W, OUTPUT_H = 3840, 2160
 STILLS_DIR = Path("stills")
 # name: (blend, tolerance). The tolerance must be wider than the blend change
@@ -204,6 +204,7 @@ class Inference(threading.Thread):
         self.ready = False
         self.status = "loading model"
         self.ms = 0.0
+        self.refresh_ms = 0.0
         self.fps = 0.0
         self.stills_pending = {}
 
@@ -317,14 +318,21 @@ class Inference(threading.Thread):
                 time.sleep(0.5)
                 continue
             self.save_stills(blend, frame, prompt)
+            ms = (time.perf_counter() - started) * 1000.0
             if len(tiles) == 1:
-                self.ms = (time.perf_counter() - started) * 1000.0
+                self.ms = ms
                 updates[tiles[0]] += 1
+            elif tiles:
+                self.refresh_ms = ms
             self.status = "running"
             now = time.perf_counter()
             if now - last_t >= 10.0:
                 self.fps = sum(updates) / (now - last_t)
-                print(f"tile update {self.ms:.1f} ms, {self.fps:.2f} updates/s {updates}, capture {self.capture.fps:.1f} fps", flush=True)
+                print(
+                    f"tile update {self.ms:.1f} ms, {self.fps:.2f} updates/s {updates}, "
+                    f"wall refresh {self.refresh_ms:.0f} ms, capture {self.capture.fps:.1f} fps",
+                    flush=True,
+                )
                 updates = [0] * TILES
                 last_t = now
 

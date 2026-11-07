@@ -1,7 +1,7 @@
 """Renders every Odaiba prompt on the center of both cameras, as a page for review.
 
 Takes a 480x480 crop from the center of each camera in the first frame of a
-recording, scales it to 960x960 and runs SDXL Turbo img2img on it with each line of
+recording, scales it to 768x768 and runs SDXL Turbo img2img on it with each line of
 prompts-odaiba.txt. Writes index.html and its images to one folder. The page is laid
 out to be printed to PDF.
 """
@@ -13,9 +13,8 @@ from pathlib import Path
 import cv2
 import torch
 
-from odaiba_tiles import CAMERAS, CROP_H, CROP_W, Stylizer, print_link, read_frames, to_gpu
+from odaiba_tiles import CAMERAS, CROP_H, CROP_W, TILE, Stylizer, print_link, read_frames, to_gpu
 
-SIZE = CROP_H
 DEFAULT_OUT = "data/odaiba-prompt-sheet"
 JPEG_QUALITY = 92
 STYLE = """
@@ -51,10 +50,10 @@ def main():
     prompts = [line.strip() for line in args.prompts.read_text(encoding="utf-8").splitlines() if line.strip()]
     args.out_dir.mkdir(parents=True, exist_ok=True)
     stylizer = Stylizer(prompts[0], args.seed)
-    x = (CROP_W - SIZE) // 2
-    crops = [next(read_frames(args.input, y, 1))[:, x : x + SIZE] for y in CAMERAS.values()]
+    x = (CROP_W - CROP_H) // 2
+    crops = [next(read_frames(args.input, y, 1))[:, x : x + CROP_H] for y in CAMERAS.values()]
     frames = torch.stack([to_gpu(crop, stylizer.device) for crop in crops])
-    noise = stylizer.noise(2 * SIZE).expand(len(crops), -1, -1, -1)
+    noise = stylizer.noise(TILE).expand(len(crops), -1, -1, -1)
 
     for camera, frame in zip(CAMERAS, frames):
         save(args.out_dir / f"input-{camera}.jpg", frame)

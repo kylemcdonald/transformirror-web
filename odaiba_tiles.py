@@ -1,10 +1,10 @@
-"""Renders the Odaiba wall at full 7680x960 from 960x960 tiles.
+"""Renders the Odaiba wall at its native 6144x768 from 768x768 tiles.
 
 Stylizer, Wall and MotionPicker are what odaiba_live.py runs. Run as a script, this
 is the offline experiment they came from.
 
 Takes the centered 3840x480 crop of each stacked camera in a recording, scales it
-2x to 7680x960, runs SDXL Turbo img2img on 960x960 tiles and writes one video per
+1.6x to 6144x768, runs SDXL Turbo img2img on 768x768 tiles and writes one video per
 camera per variant:
 
   tiled      All 8 tiles every frame, hard seams. Every tile gets the same seed and
@@ -44,11 +44,11 @@ from diffusers import AutoencoderTiny, AutoPipelineForImage2Image
 CROP_W, CROP_H = 3840, 480
 CAMERA_H = 1080
 CAMERAS = {"top": (CAMERA_H - CROP_H) // 2, "bottom": CAMERA_H + (CAMERA_H - CROP_H) // 2}
-WALL_W, WALL_H = 2 * CROP_W, 2 * CROP_H
-TILE = 960
+WALL_W, WALL_H = 6144, 768
+TILE = 768
 TILES = WALL_W // TILE
 LATENT_SCALE = 8
-MOTION_W, MOTION_H = WALL_W // 8, WALL_H // 8
+MOTION_W, MOTION_H = CROP_W // 4, CROP_H // 4
 VARIANTS = ("tiled", "feathered", "motion")
 DEFAULT_OUT = "data/odaiba-tiles"
 
@@ -293,9 +293,10 @@ def open_writer(path, fps):
 
 
 def to_gpu(frame, device):
-    """Scales an RGB uint8 frame 2x with bicubic. Returns 3xHxW half in 0..1."""
+    """Scales an RGB uint8 frame from camera to wall size with bicubic. Returns 3xHxW half in 0..1."""
+    size = (frame.shape[0] * WALL_H // CROP_H, frame.shape[1] * WALL_W // CROP_W)
     pixels = torch.from_numpy(np.ascontiguousarray(frame)).to(device).permute(2, 0, 1)[None].float() / 255
-    return F.interpolate(pixels, scale_factor=2, mode="bicubic")[0].clamp_(0, 1).half()
+    return F.interpolate(pixels, size=size, mode="bicubic")[0].clamp_(0, 1).half()
 
 
 def render(stylizer, args, camera, variant, fps):
