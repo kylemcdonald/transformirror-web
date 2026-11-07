@@ -68,6 +68,7 @@ class Stylizer:
         self.unet = pipe.unet.to(memory_format=torch.channels_last)
         self.vae = pipe.vae
         self.seed = seed
+        self.pipe = pipe
 
         strength = min(max(1 / steps, strength), 1)
         start = steps - min(int(steps * strength), steps)
@@ -77,11 +78,13 @@ class Stylizer:
         self.timestep = pipe.scheduler.timesteps[start]
         self.sigma = float(pipe.scheduler.sigmas[start])
 
+        self.set_prompt(prompt)
+
+    def set_prompt(self, prompt):
         with torch.inference_mode():
-            self.embeds, _, self.pooled, _ = pipe.encode_prompt(
+            self.embeds, _, self.pooled, _ = self.pipe.encode_prompt(
                 prompt=prompt, device=self.device, num_images_per_prompt=1, do_classifier_free_guidance=False
             )
-        del pipe
 
     def noise(self, width):
         generator = torch.Generator(device=self.device).manual_seed(self.seed)
